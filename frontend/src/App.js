@@ -5,13 +5,16 @@ import { auth, signInWithGoogle, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 
 // const API_URL = process.env.REACT_APP_API_URL || '';
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+const API_URL = '';
 
 function App() {
   // Authentication states
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [rawData, setRawData] = useState('');
+  const [inputMode, setInputMode] = useState('text'); // 'text' or 'file' ← ADD THIS
+  const [uploadedFile, setUploadedFile] = useState(null); // ← ADD THIS
+  const [uploadedFileName, setUploadedFileName] = useState(''); // ← ADD THIS
   const [csvData, setCsvData] = useState(null);
   const [question, setQuestion] = useState('');
   const [analysis, setAnalysis] = useState(null);
@@ -20,8 +23,10 @@ function App() {
   const [autoAnalysis, setAutoAnalysis] = useState(null);
   const [analysisHistory, setAnalysisHistory] = useState([]);
   const [showHistory, setShowHistory] = useState(false);
-  const [comparison, setComparison] = useState(null);
-  const [currentAnalysisId, setCurrentAnalysisId] = useState(null);
+const [comparison, setComparison] = useState(null);
+const [currentAnalysisId, setCurrentAnalysisId] = useState(null);
+const [loadedAnalysis, setLoadedAnalysis] = useState(null);
+const [showComparison, setShowComparison] = useState(false);
   
   // Voice-related states
   const [isListening, setIsListening] = useState(false);
@@ -86,19 +91,50 @@ function App() {
     }
   };
 
- // Check authentication state
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setAuthLoading(false);
-    });
-    return () => unsubscribe();
-  }, []);
+// Check authentication state - SIMPLIFIED for POPUP
+useEffect(() => {
+  console.log('🔍 [APP] Initializing authentication...');
+  let isMounted = true;
 
-  // Initialize speech recognition
+  const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    if (!isMounted) return;
+
+    console.log('🔐 [APP] Auth state changed');
+    console.log('🔐 [APP] Current user:', currentUser ? currentUser.email : 'none');
+    
+    if (currentUser) {
+      console.log('✅ [APP] User authenticated:', currentUser.email);
+      console.log('✅ [APP] User UID:', currentUser.uid);
+      
+      // Store fresh token
+      try {
+        const token = await currentUser.getIdToken(true);
+        localStorage.setItem('authToken', token);
+        console.log('✅ [APP] Token stored');
+      } catch (e) {
+        console.error('⚠️ [APP] Token storage failed:', e);
+      }
+      
+      setUser(currentUser);
+      
+    } else {
+      console.log('ℹ️ [APP] No user signed in');
+      setUser(null);
+    }
+    
+    setAuthLoading(false);
+  });
+
+  return () => {
+    console.log('🧹 [APP] Cleaning up auth listener');
+    isMounted = false;
+    unsubscribe();
+  };
+}, []);
+
+// Initialize speech recognition
   useEffect(() => {
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
       recognitionRef.current.continuous = false;
       recognitionRef.current.interimResults = false;
@@ -125,6 +161,26 @@ function App() {
         setIsListening(false);
       };
     }
+    // CRITICAL: Cleanup on unmount
+    return () => {
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.stop();
+        } catch (e) {
+          console.warn('Recognition cleanup failed:', e);
+        }
+      }
+      
+      if (progressIntervalRef.current) {
+        clearInterval(progressIntervalRef.current);
+      }
+      
+      try {
+        synthRef.current.cancel();
+      } catch (e) {
+        console.warn('Speech cleanup failed:', e);
+      }
+    };
   }, [csvData]);
 
  // Convert numbers to Indian spoken format
@@ -154,11 +210,25 @@ function App() {
 const speak = (text, startFromSegment = 0) => {
     if (!voiceEnabled || !text) return;
     
-    // Stop any ongoing speech
-    synthRef.current.cancel();
+    // SAFE CLEANUP: Stop any ongoing speech
+    try {
+      synthRef.current.cancel();
+    } catch (e) {
+      console.warn('Speech cancel failed:', e);
+    }
+    
     if (progressIntervalRef.current) {
       clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
     }
+    
+    // Wait for cancellation to complete
+    setTimeout(() => {
+      speakInternal(text, startFromSegment);
+    }, 100);
+  };
+
+  const speakInternal = (text, startFromSegment = 0) => {
 
     // Split text into segments for navigation
     const segments = splitIntoSegments(text);
@@ -303,15 +373,21 @@ const speak = (text, startFromSegment = 0) => {
   };
 
  // Handle Google Sign-In
-  const handleSignIn = async () => {
-    try {
-      await signInWithGoogle();
+const handleSignIn = async () => {
+  try {
+    console.log('🔐 [APP] Sign-in button clicked');
+    const user = await signInWithGoogle();
+    
+    if (user) {
+      console.log('✅ [APP] Sign-in successful:', user.email);
       speak('Welcome! You have successfully signed in.');
-    } catch (error) {
-      console.error('Sign-in error:', error);
-      setError('Failed to sign in. Please try again.');
     }
-  };
+  } catch (error) {
+    console.error('❌ [APP] Sign-in error:', error);
+    setError(error.message || 'Failed to sign in. Please try again.');
+    speak('Sign in failed. Please try again.');
+  }
+};
 
   // Handle Logout
   const handleLogout = async () => {
@@ -326,56 +402,147 @@ const speak = (text, startFromSegment = 0) => {
       console.error('Logout error:', error);
     }
   };
+  // Handle file upload
+  const handleFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
 
-  const parseData = async () => {
-    if (!rawData.trim()) {
-      setError('Please enter some data first!');
+    // CLIENT-SIDE VALIDATION
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSize) {
+      setError('File too large! Maximum size is 10MB.');
+      speak('File is too large. Please upload a file smaller than 10 megabytes.');
       return;
     }
 
-    setLoading(true);
-    setError('');
-    setAnalysis(null);
+    const allowedTypes = ['.csv', '.xlsx', '.xls', '.pdf', '.docx', '.doc'];
+    const fileExt = '.' + file.name.split('.').pop().toLowerCase();
+    if (!allowedTypes.includes(fileExt)) {
+      setError('Invalid file type! Please upload CSV, Excel, PDF, or Word files.');
+      speak('Invalid file type. Please upload a CSV, Excel, PDF, or Word file.');
+      return;
+    }
 
-  try {
+    setUploadedFile(file);
+    setUploadedFileName(file.name);
+    setError('');
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    setLoading(true);
+
+    try {
       const token = user ? await user.getIdToken() : null;
-      const headers = {
-        'Content-Type': 'application/json'
-      };
+      const headers = {};
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
       }
 
-      const response = await fetch(`${API_URL}/api/parse-data`, {
+      const response = await fetch(`${API_URL}/api/upload-file`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ rawData })
+        body: formData
       });
 
       const result = await response.json();
 
       if (result.success) {
-        setCsvData(result.csvData);
-        await performAutoAnalysis(result.csvData);
-        setTimeout(() => {
-          speak('Hello! I have analyzed your data. Let me present the key findings.');
-        }, 1000);
+        setRawData(result.extractedData);
+        speak(`File ${file.name} uploaded successfully. Click Analyze to process the data.`);
       } else {
-        setError(result.error);
+        setError(result.error || 'Failed to process file');
+        speak('Failed to process the file. Please try again.');
       }
     } catch (err) {
-      setError('Failed to connect to backend. Make sure server is running on port 5000!');
+      setError('Failed to upload file. Make sure server is running!');
+      speak('Failed to upload file. Please check your connection.');
     } finally {
       setLoading(false);
     }
   };
 
+  const parseData = async () => {
+  if (!rawData.trim()) {
+    setError('Please enter some data first!');
+    return;
+  }
+
+  const lineCount = rawData.split('\n').length;
+  
+  // ============================================
+  // ENHANCED SIZE WARNING WITH RECOMMENDATIONS
+  // ============================================
+  if (lineCount > 10000) {
+    const confirmed = window.confirm(
+      `⚠️ LARGE FILE DETECTED: ${lineCount.toLocaleString()} rows\n\n` +
+      `Processing may take 30-60 seconds.\n` +
+      `Charts will use sampled data for performance.\n\n` +
+      `Continue?`
+    );
+    if (!confirmed) return;
+  } else if (lineCount > 5000) {
+    const confirmed = window.confirm(
+      `This file has ${lineCount.toLocaleString()} rows. Processing may take 10-30 seconds. Continue?`
+    );
+    if (!confirmed) return;
+  }
+
+  setLoading(true);
+  setError('');
+  setAnalysis(null);
+
+  try {
+    const token = user ? await user.getIdToken() : null;
+    const headers = {
+      'Content-Type': 'application/json'
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const response = await fetch(`${API_URL}/api/parse-data`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ rawData })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      setCsvData(result.csvData);
+      
+      if (result.rowCount >= 1000) {
+        speak(`Successfully processed ${result.rowCount} rows of data. This is a large dataset. Analysis is ready.`);
+      }
+      
+      await performAutoAnalysis(result.csvData);
+      setTimeout(() => {
+        speak('Hello! I have analyzed your data. Let me present the key findings.');
+      }, 1000);
+    } else {
+      setError(result.error);
+    }
+  } catch (err) {
+    setError('Failed to connect to backend. Make sure server is running on port 5000!');
+  } finally {
+    setLoading(false);
+  }
+};
+
   const performAutoAnalysis = async (data) => {
     setLoading(true);
+    setShowPlaybackControls(false); // ← ✅ ADD THIS LINE
+    
+    // Show progress message for large datasets
+    const rowCount = data.data.length;
+    if (rowCount > 10000) {
+      setError(''); // Clear any previous errors
+      console.log(`⏳ Processing ${rowCount.toLocaleString()} rows - this may take 30-60 seconds...`);
+    }
     
     try {
-      const analysisPrompt = `As a professional data analyst presenting to HR/Management, provide a comprehensive business analysis of this data. 
-
+      const analysisPrompt = `As a professional data analyst presenting to HR/Management, provide a comprehensive business analysis of this data.
 IMPORTANT: Write this as a SPOKEN PRESENTATION that will be narrated out loud to executives. Use natural, conversational language as if you're actually talking to someone in a meeting.
 
 When mentioning amounts in Indian Rupees:
@@ -424,7 +591,8 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
         setAutoAnalysis({
           summary: result.content,
           metrics: calculateMetrics(data),
-          charts: prepareChartData(data)
+          charts: prepareChartData(data),
+          industryType: result.industryType || 'business' 
         });
         
         // NEW: Save to MongoDB
@@ -446,6 +614,29 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
     try {
       const token = await user.getIdToken();
       
+      // ============================================
+      // SMART STORAGE: Don't save huge datasets to MongoDB
+      // ============================================
+      const rowCount = csvData.data.length;
+      
+      // For large datasets, save only metadata + samples
+      let dataToSave = csvData;
+      let rawDataToSave = rawData;
+      
+      if (rowCount > 1000) {
+        console.log(`📦 Large dataset (${rowCount} rows) - saving metadata only to MongoDB`);
+        
+        // Save only first 100 rows as sample
+        dataToSave = {
+          headers: csvData.headers,
+          data: csvData.data.slice(0, 100) // Only first 100 rows
+        };
+        
+        // Trim raw data too
+        const rawLines = rawData.split('\n');
+        rawDataToSave = rawLines.slice(0, 101).join('\n'); // Header + 100 rows
+      }
+      
       const response = await fetch(`${API_URL}/api/save-analysis`, {
         method: 'POST',
         headers: {
@@ -453,28 +644,27 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          rawData: rawData,
-          csvData: csvData,
+          rawData: rawDataToSave, // Trimmed for large datasets
+          csvData: dataToSave, // Only samples for large datasets
           analysis: {
             summary: summary,
             metrics: metrics
           },
+          industryType: csvData?.industryType || 'business', 
           dataType: 'sales',
-          tags: ['auto-saved']
+          tags: ['auto-saved'],
+          // Add metadata about original size
+          originalRowCount: rowCount,
+          isSampled: rowCount > 1000
         })
       });
-
       const result = await response.json();
       
-      if (result.success) {
-        console.log('✅ Analysis saved to history:', result.analysisId);
-        setCurrentAnalysisId(result.analysisId);
-        
-        // Auto-fetch comparison after saving
-        if (metrics) {
-          await fetchComparison(metrics);
-        }
-      }
+if (result.success) {
+  console.log('✅ Analysis saved to history:', result.analysisId);
+  setCurrentAnalysisId(result.analysisId);
+  // Comparison is now manual - user clicks button
+}
     } catch (error) {
       console.error('Failed to save analysis:', error);
     }
@@ -501,71 +691,183 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
   };
 
   const fetchComparison = async (currentMetrics) => {
-    try {
-      const token = await user.getIdToken();
-      
-      const response = await fetch(`${API_URL}/api/compare-analysis`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          currentMetrics: currentMetrics,
-          dataType: 'sales'
-        })
-      });
+  try {
+    const token = await user.getIdToken();
+    
+    // Get the current industry type from validation result
+    const currentIndustry = autoAnalysis?.industryType || 
+                           csvData?.industryType || 
+                           'business';
+    
+    console.log('📊 Requesting comparison for industry:', currentIndustry);
+    
+    const response = await fetch(`${API_URL}/api/compare-analysis`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        currentMetrics: currentMetrics,
+        dataType: 'sales',
+        currentIndustry: currentIndustry  // ← ADD THIS!
+      })
+    });
 
-      const result = await response.json();
+    const result = await response.json();
+    
+    if (result.success) {
+      setComparison(result.comparison);
       
-      if (result.success) {
-        setComparison(result.comparison);
-        
-        // Speak comparison if available
-        if (result.comparison.hasHistory && result.comparison.aiInsight) {
-          setTimeout(() => {
-            speak(`Historical comparison: ${result.comparison.aiInsight}`);
-          }, 8000); // Wait 8 seconds after main analysis
-        }
+      // Speak comparison if available
+      if (result.comparison.hasHistory && result.comparison.aiInsight) {
+        setTimeout(() => {
+          speak(result.comparison.aiInsight);
+        }, 8000);
       }
-    } catch (error) {
-      console.error('Failed to fetch comparison:', error);
     }
-  };
+  } catch (error) {
+    console.error('Failed to fetch comparison:', error);
+  }
+};
 
   const loadPastAnalysis = async (analysisId) => {
-    try {
-      const token = await user.getIdToken();
-      
-      const response = await fetch(`${API_URL}/api/analysis/${analysisId}`, {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-
-      const result = await response.json();
-      
-      if (result.success) {
-        const analysis = result.analysis;
-        
-        // Restore the analysis
-        setRawData(analysis.rawData || '');
-        setCsvData(analysis.csvData);
-        setAutoAnalysis({
-          summary: analysis.analysis.summary,
-          metrics: analysis.analysis.metrics,
-          charts: prepareChartData(analysis.csvData)
-        });
-        setCurrentAnalysisId(analysis._id);
-        
-        setShowHistory(false);
-        speak('I have loaded your past analysis.');
+  try {
+    const token = await user.getIdToken();
+    
+    const response = await fetch(`${API_URL}/api/analysis/${analysisId}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
       }
-    } catch (error) {
-      console.error('Failed to load analysis:', error);
-    }
-  };
+    });
 
+    const result = await response.json();
+    
+    if (result.success) {
+      const analysis = result.analysis;
+      
+      // Store loaded analysis for comparison
+      setLoadedAnalysis({
+        id: analysis._id,
+        summary: analysis.analysis.summary,
+        metrics: analysis.analysis.metrics,
+        industryType: analysis.industryType || 'business',
+        timestamp: analysis.timestamp || analysis.createdAt
+      });
+      
+      setShowHistory(false);
+      speak('Past analysis loaded. Click Compare to see the comparison.');
+    }
+  } catch (error) {
+    console.error('Failed to load analysis:', error);
+  }
+};
+  
+  const performManualComparison = async () => {
+  if (!autoAnalysis || !loadedAnalysis) {
+    setError('Please have both current analysis and loaded analysis ready');
+    return;
+  }
+
+  if (autoAnalysis.industryType !== loadedAnalysis.industryType) {
+    setComparison({
+      hasHistory: true,
+      canCompare: false,
+      currentIndustry: autoAnalysis.industryType,
+      loadedIndustry: loadedAnalysis.industryType,
+      warningMessage: `⚠️ **Cannot Compare Different Industries**
+
+Current Analysis: ${autoAnalysis.industryType.toUpperCase()}
+Loaded Analysis: ${loadedAnalysis.industryType.toUpperCase()}
+
+These are different industry types and cannot be meaningfully compared. Please load an analysis from the same industry (${autoAnalysis.industryType}) to enable comparison.`
+    });
+    setShowComparison(true);
+    speak('Cannot compare different industries. Please load a same-industry analysis.');
+    return;
+  }
+
+  // Perform comparison with same industry
+  const currentMetrics = autoAnalysis.metrics;
+  const pastMetrics = loadedAnalysis.metrics;
+
+  const revenueChange = pastMetrics.totalRevenue !== 0 
+    ? (((currentMetrics.totalRevenue - pastMetrics.totalRevenue) / pastMetrics.totalRevenue) * 100).toFixed(2)
+    : 0;
+  
+  const growthChange = pastMetrics.growthRate !== 0
+    ? (((currentMetrics.growthRate - pastMetrics.growthRate) / Math.abs(pastMetrics.growthRate)) * 100).toFixed(2)
+    : 0;
+
+  const trend = parseFloat(revenueChange) > 5 ? 'improving' : 
+                parseFloat(revenueChange) < -5 ? 'declining' : 'stable';
+
+  // Generate AI insight
+  const comparisonPrompt = `Compare these two ${autoAnalysis.industryType} analyses:
+
+**CURRENT ANALYSIS:**
+- Revenue: ₹${currentMetrics.totalRevenue.toLocaleString()} (₹${(currentMetrics.totalRevenue / 100000).toFixed(2)} lakhs)
+- Growth Rate: ${currentMetrics.growthRate.toFixed(2)}%
+- Data Points: ${currentMetrics.dataPoints}
+
+**LOADED ANALYSIS (Past):**
+- Revenue: ₹${pastMetrics.totalRevenue.toLocaleString()} (₹${(pastMetrics.totalRevenue / 100000).toFixed(2)} lakhs)
+- Growth Rate: ${pastMetrics.growthRate.toFixed(2)}%
+- Data Points: ${pastMetrics.dataPoints}
+
+**CHANGES:**
+- Revenue Change: ${revenueChange}%
+- Trend: ${trend}
+
+Provide a concise comparison insight (3-4 sentences) highlighting key differences and recommendations.`;
+
+  try {
+    const token = await user.getIdToken();
+    const response = await fetch(`${API_URL}/api/analyze`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        question: comparisonPrompt,
+        csvData: csvData
+      })
+    });
+
+    const result = await response.json();
+    
+    setComparison({
+      hasHistory: true,
+      canCompare: true,
+      currentIndustry: autoAnalysis.industryType,
+      trend: trend,
+      metrics: {
+        current: {
+          totalRevenue: currentMetrics.totalRevenue,
+          growthRate: currentMetrics.growthRate,
+          dataPoints: currentMetrics.dataPoints
+        },
+        past: {
+          totalRevenue: pastMetrics.totalRevenue,
+          growthRate: pastMetrics.growthRate,
+          dataPoints: pastMetrics.dataPoints
+        },
+        changes: {
+          revenueChange: revenueChange,
+          growthChange: growthChange
+        }
+      },
+      aiInsight: result.content || 'Comparison complete'
+    });
+
+    setShowComparison(true);
+    speak('Comparison complete. Here are the key differences.');
+  } catch (error) {
+    console.error('Comparison failed:', error);
+    setError('Failed to generate comparison');
+  }
+};
   const calculateMetrics = (data) => {
     if (!data || !data.data.length) return null;
 
@@ -596,9 +898,13 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
     const firstHalfAvg = firstHalf.length > 0 ? firstHalf.reduce((a, b) => a + b, 0) / firstHalf.length : 0;
     const secondHalfAvg = secondHalf.length > 0 ? secondHalf.reduce((a, b) => a + b, 0) / secondHalf.length : 0;
     
-    let growthRate = 0;
-    if (firstHalfAvg !== 0 && !isNaN(firstHalfAvg) && !isNaN(secondHalfAvg)) {
+  let growthRate = 0;
+    if (firstHalfAvg > 0 && !isNaN(firstHalfAvg) && !isNaN(secondHalfAvg)) {
       growthRate = ((secondHalfAvg - firstHalfAvg) / firstHalfAvg) * 100;
+      
+      // Cap extreme values to prevent UI issues
+      if (growthRate > 1000) growthRate = 1000;
+      if (growthRate < -100) growthRate = -100;
     }
     
     // Ensure growthRate is a valid number
@@ -619,7 +925,30 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
   const prepareChartData = (data) => {
     if (!data || !data.data.length) return [];
     
-    return data.data.map((row, idx) => {
+    // ============================================
+    // CHART OPTIMIZATION: Limit data points for performance
+    // ============================================
+    const rowCount = data.data.length;
+    let chartData = data.data;
+    
+    // For large datasets, use smart sampling for charts
+    if (rowCount > 500) {
+      console.log(`📊 Large dataset (${rowCount} rows) - sampling for charts`);
+      
+      // Strategy: Take evenly distributed samples across the dataset
+      const sampleSize = 500;
+      const step = Math.floor(rowCount / sampleSize);
+      
+      chartData = [];
+      for (let i = 0; i < rowCount; i += step) {
+        chartData.push(data.data[i]);
+      }
+      
+      // Ensure we don't exceed 500 points
+      chartData = chartData.slice(0, sampleSize);
+    }
+    
+    return chartData.map((row, idx) => {
       const obj = { index: idx };
       data.headers.forEach((header, i) => {
         obj[header] = row[i];
@@ -644,9 +973,13 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
     }
 
     setLoading(true);
+    
     setError('');
 
   try {
+      // TIMEOUT PROTECTION
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
       const token = user ? await user.getIdToken() : null;
       const headers = {
         'Content-Type': 'application/json'
@@ -658,8 +991,11 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
       const response = await fetch(`${API_URL}/api/analyze`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ question: questionText, csvData })
+        body: JSON.stringify({ question: questionText, csvData }),
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
 
       const result = await response.json();
 
@@ -672,7 +1008,12 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
         setError(result.error);
       }
     } catch (err) {
-      setError('Failed to analyze. Check backend connection!');
+      if (err.name === 'AbortError') {
+        setError('Request timed out. Please try again.');
+        speak('The request took too long. Please try again.');
+      } else {
+        setError('Failed to analyze. Check backend connection!');
+      }
     } finally {
       setLoading(false);
     }
@@ -691,7 +1032,6 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
   );
   const dateKey = csvData?.headers[0];
 
-  // Chart rendering function
   const renderChart = (chartType) => {
     if (!chartData.length || !revenueKey) return null;
 
@@ -706,9 +1046,14 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
               </linearGradient>
             </defs>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={dateKey} />
-            <YAxis />
-            <Tooltip />
+            <XAxis 
+              dataKey={dateKey} 
+              label={{ value: dateKey || 'Period', position: 'insideBottom', offset: -5 }}
+            />
+            <YAxis 
+              label={{ value: 'Revenue (₹)', angle: -90, position: 'insideLeft' }}
+            />
+            <Tooltip formatter={(value) => `₹${value.toLocaleString()}`} />
             <Legend />
             <Area type="monotone" dataKey={revenueKey} stroke="#8b5cf6" fillOpacity={1} fill="url(#colorRevenue)" />
           </AreaChart>
@@ -718,9 +1063,14 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
         <ResponsiveContainer width="100%" height={300}>
           <BarChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={dateKey} />
-            <YAxis />
-            <Tooltip />
+            <XAxis 
+              dataKey={dateKey}
+              label={{ value: dateKey || 'Period', position: 'insideBottom', offset: -5 }}
+            />
+            <YAxis 
+              label={{ value: 'Amount', angle: -90, position: 'insideLeft' }}
+            />
+            <Tooltip formatter={(value) => value.toLocaleString()} />
             <Legend />
             <Bar dataKey={revenueKey} fill="#10b981" radius={[8, 8, 0, 0]} />
             {quantityKey && <Bar dataKey={quantityKey} fill="#f59e0b" radius={[8, 8, 0, 0]} />}
@@ -731,9 +1081,14 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={dateKey} />
-            <YAxis />
-            <Tooltip />
+            <XAxis 
+              dataKey={dateKey}
+              label={{ value: dateKey || 'Period', position: 'insideBottom', offset: -5 }}
+            />
+            <YAxis 
+              label={{ value: 'Value', angle: -90, position: 'insideLeft' }}
+            />
+            <Tooltip formatter={(value) => value.toLocaleString()} />
             <Legend />
             <Line type="monotone" dataKey={revenueKey} stroke="#3b82f6" strokeWidth={3} />
             {quantityKey && <Line type="monotone" dataKey={quantityKey} stroke="#f59e0b" strokeWidth={2} />}
@@ -750,13 +1105,17 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
               cx="50%"
               cy="50%"
               outerRadius={100}
-              label={(entry) => `${entry[dateKey]}: ₹${entry[revenueKey].toLocaleString()}`}
+              label={(entry) => {
+                const total = chartData.reduce((sum, item) => sum + (item[revenueKey] || 0), 0);
+                const percent = ((entry[revenueKey] / total) * 100).toFixed(1);
+                return `${entry[dateKey]}: ${percent}%`;
+              }}
             >
               {chartData.map((entry, index) => (
                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
               ))}
             </Pie>
-            <Tooltip />
+            <Tooltip formatter={(value) => `₹${value.toLocaleString()}`} />
             <Legend />
           </PieChart>
         </ResponsiveContainer>
@@ -765,9 +1124,17 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
         <ResponsiveContainer width="100%" height={300}>
           <ScatterChart>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={quantityKey || 'index'} name={quantityKey || 'Index'} />
-            <YAxis dataKey={revenueKey} name="Revenue" />
-            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+            <XAxis 
+              dataKey={quantityKey || 'index'} 
+              name={quantityKey || 'Index'}
+              label={{ value: quantityKey || 'Index', position: 'insideBottom', offset: -5 }}
+            />
+            <YAxis 
+              dataKey={revenueKey} 
+              name="Revenue"
+              label={{ value: 'Revenue (₹)', angle: -90, position: 'insideLeft' }}
+            />
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} formatter={(value) => `₹${value.toLocaleString()}`} />
             <Legend />
             <Scatter name="Data Points" data={chartData} fill="#8b5cf6" />
           </ScatterChart>
@@ -782,7 +1149,7 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
             <Radar name="Revenue" dataKey={revenueKey} stroke="#8b5cf6" fill="#8b5cf6" fillOpacity={0.6} />
             {quantityKey && <Radar name="Quantity" dataKey={quantityKey} stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.6} />}
             <Legend />
-            <Tooltip />
+            <Tooltip formatter={(value) => value.toLocaleString()} />
           </RadarChart>
         </ResponsiveContainer>
       ) : <div style={{padding: '20px', textAlign: 'center', color: '#666'}}>Radar chart works best with 8 or fewer data points</div>,
@@ -790,9 +1157,14 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
         <ResponsiveContainer width="100%" height={300}>
           <ComposedChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey={dateKey} />
-            <YAxis />
-            <Tooltip />
+            <XAxis 
+              dataKey={dateKey}
+              label={{ value: dateKey || 'Period', position: 'insideBottom', offset: -5 }}
+            />
+            <YAxis 
+              label={{ value: 'Value', angle: -90, position: 'insideLeft' }}
+            />
+            <Tooltip formatter={(value) => value.toLocaleString()} />
             <Legend />
             <Bar dataKey={revenueKey} fill="#10b981" radius={[8, 8, 0, 0]} />
             {quantityKey && <Line type="monotone" dataKey={quantityKey} stroke="#f59e0b" strokeWidth={3} />}
@@ -802,7 +1174,7 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
       funnel: (
         <ResponsiveContainer width="100%" height={300}>
           <FunnelChart>
-            <Tooltip />
+            <Tooltip formatter={(value) => `₹${value.toLocaleString()}`} />
             <Funnel
               dataKey={revenueKey}
               data={chartData.slice(0, 6)}
@@ -820,22 +1192,35 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
     return chartConfig[chartType];
   };
 
-// Loading Screen
-  if (authLoading) {
-    return (
-      <div style={{ 
-        minHeight: '100vh', 
-        background: 'linear-gradient(135deg, #1e3a8a 0%, #312e81 100%)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center'
-      }}>
-        <div style={{ color: 'white', fontSize: '2em', fontWeight: 'bold' }}>
-          Loading InsightAI... 🧠
-        </div>
+// Loading Screen with DEBUG info
+if (authLoading) {
+  return (
+    <div style={{ 
+      minHeight: '100vh', 
+      background: 'linear-gradient(135deg, #1e3a8a 0%, #312e81 100%)',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: '20px'
+    }}>
+      <div style={{ color: 'white', fontSize: '2em', fontWeight: 'bold' }}>
+        Loading InsightAI... 🧠
       </div>
-    );
-  }
+      <div style={{ color: 'white', fontSize: '1em', background: 'rgba(0,0,0,0.3)', padding: '20px', borderRadius: '10px', maxWidth: '600px' }}>
+        <div>🔍 Debug Info:</div>
+        <div>• Auth Loading: {authLoading ? 'YES' : 'NO'}</div>
+        <div>• User: {user ? user.email : 'NONE'}</div>
+        <div>• Current URL: {window.location.href}</div>
+        <div>• Stored Token: {localStorage.getItem('authToken') ? 'EXISTS' : 'MISSING'}</div>
+        <div>• Session Storage: {sessionStorage.getItem('signingIn') || 'NONE'}</div>
+      </div>
+      <div style={{ color: 'yellow', fontSize: '0.9em' }}>
+        Check browser console (F12) for detailed logs
+      </div>
+    </div>
+  );
+}
 
   // Login Screen
   if (!user) {
@@ -934,7 +1319,7 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
               fontWeight: 'bold',
               flex: 2
             }}>
-              🧠 AI Data Analyst
+              🧠 InsightAI - Universal Analytics
             </h1>
              <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-end', gap: '10px', alignItems: 'center' }}>
               <div style={{ 
@@ -1009,7 +1394,7 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
             </div>
           </div>
           <p style={{ color: '#666', fontSize: '1.1em', margin: 0 }}>
-            Your Virtual Data Scientist - {voiceEnabled ? '🎤 Voice-Enabled' : '🔇 Silent Mode'}
+            AI-Powered Analytics for Any Industry - {voiceEnabled ? '🎤 Voice-Enabled' : '🔇 Silent Mode'}
           </p>
         </div>
 
@@ -1025,27 +1410,221 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
             <Package size={24} /> Upload Your Business Data
           </h2>
           <p style={{ color: '#666', marginBottom: '15px' }}>
-            Paste any sales data, revenue reports, customer data, or business metrics. I'll analyze it like a professional data scientist.
+            Paste data from ANY industry - Sales, FinTech, Marketing, Healthcare, Education, Retail, or anything else. I'll automatically detect the type and provide relevant insights. <strong>Try a demo dataset below!</strong>
           </p>
-          <textarea
-            value={rawData}
-            onChange={(e) => setRawData(e.target.value)}
-            placeholder="Example:&#10;Jan  Mobile Rs5000&#10;February  Mobile Rs1000&#10;March  Mobile Rs30000&#10;April  Mobile Rs500&#10;&#10;Or paste Excel data, CSV, or even messy notes!"
-            rows="8"
-            style={{
-              width: '100%',
-              padding: '15px',
-              border: '2px solid #e5e7eb',
-              borderRadius: '10px',
-              fontSize: '1em',
-              fontFamily: 'monospace',
-              resize: 'vertical',
-              boxSizing: 'border-box'
-            }}
-          />
+
+          {/* ========== NEW: Input Mode Toggle ========== */}
+          <div style={{ marginBottom: '20px', display: 'flex', gap: '10px' }}>
+            <button
+              onClick={() => setInputMode('text')}
+              style={{
+                padding: '12px 24px',
+                background: inputMode === 'text' 
+                  ? 'linear-gradient(135deg, #1e3a8a, #7c3aed)' 
+                  : '#f3f4f6',
+                color: inputMode === 'text' ? 'white' : '#374151',
+                border: `2px solid ${inputMode === 'text' ? '#1e3a8a' : '#d1d5db'}`,
+                borderRadius: '10px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              ✍️ Paste Text/CSV
+            </button>
+            <button
+              onClick={() => setInputMode('file')}
+              style={{
+                padding: '12px 24px',
+                background: inputMode === 'file' 
+                  ? 'linear-gradient(135deg, #1e3a8a, #7c3aed)' 
+                  : '#f3f4f6',
+                color: inputMode === 'file' ? 'white' : '#374151',
+                border: `2px solid ${inputMode === 'file' ? '#1e3a8a' : '#d1d5db'}`,
+                borderRadius: '10px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}
+            >
+              📎 Upload File
+            </button>
+          </div>
+
+          {/* ========== TEXT INPUT MODE ========== */}
+          {inputMode === 'text' && (
+            <>
+              <div style={{ marginBottom: '15px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  onClick={async () => {
+                    try {
+                      const response = await fetch(`${API_URL}/api/demo-datasets`);
+                      const result = await response.json();
+                      if (result.success) {
+                        setRawData(result.datasets.ecommerce.data);
+                        speak('Loaded e-commerce demo data. Click Analyze to see insights.');
+                      }
+                    } catch (err) {
+                      setError('Failed to load demo data');
+                    }
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    background: 'linear-gradient(135deg, #10b981, #059669)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  📦 E-commerce Demo
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const response = await fetch(`${API_URL}/api/demo-datasets`);
+                      const result = await response.json();
+                      if (result.success) {
+                        setRawData(result.datasets.fintech.data);
+                        speak('Loaded FinTech demo data. Click Analyze to see insights.');
+                      }
+                    } catch (err) {
+                      setError('Failed to load demo data');
+                    }
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    background: 'linear-gradient(135deg, #3b82f6, #2563eb)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  💳 FinTech Demo
+                </button>
+                <button
+                  onClick={async () => {
+                    try {
+                      const response = await fetch(`${API_URL}/api/demo-datasets`);
+                      const result = await response.json();
+                      if (result.success) {
+                        setRawData(result.datasets.marketing.data);
+                        speak('Loaded marketing demo data. Click Analyze to see insights.');
+                      }
+                    } catch (err) {
+                      setError('Failed to load demo data');
+                    }
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    background: 'linear-gradient(135deg, #f59e0b, #d97706)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  📊 Marketing Demo
+                </button>
+              </div>
+              <textarea
+                value={rawData}
+                onChange={(e) => setRawData(e.target.value)}
+                placeholder="Example:&#10;Jan  Mobile Rs5000&#10;February  Mobile Rs1000&#10;March  Mobile Rs30000&#10;April  Mobile Rs500&#10;&#10;Or paste Excel data, CSV, or even messy notes!"
+                rows="8"
+                style={{
+                  width: '100%',
+                  padding: '15px',
+                  border: '2px solid #e5e7eb',
+                  borderRadius: '10px',
+                  fontSize: '1em',
+                  fontFamily: 'monospace',
+                  resize: 'vertical',
+                  boxSizing: 'border-box'
+                }}
+              />
+            </>
+          )}
+
+          {/* ========== FILE UPLOAD MODE ========== */}
+          {inputMode === 'file' && (
+            <div style={{
+              border: '3px dashed #d1d5db',
+              borderRadius: '15px',
+              padding: '40px',
+              textAlign: 'center',
+              background: '#f9fafb'
+            }}>
+              <div style={{ marginBottom: '20px' }}>
+                <div style={{ fontSize: '4em', marginBottom: '10px' }}>📁</div>
+                <div style={{ fontSize: '1.2em', fontWeight: 'bold', color: '#1e3a8a', marginBottom: '10px' }}>
+                  Upload Your Data File
+                </div>
+                <div style={{ color: '#6b7280', marginBottom: '20px' }}>
+                  Supports: CSV, Excel (.xlsx, .xls), PDF, Word (.docx)
+                </div>
+              </div>
+
+              <input
+                type="file"
+                id="fileUpload"
+                accept=".csv,.xlsx,.xls,.pdf,.docx,.doc"
+                onChange={handleFileUpload}
+                style={{ display: 'none' }}
+              />
+              
+              <label
+                htmlFor="fileUpload"
+                style={{
+                  display: 'inline-block',
+                  padding: '15px 40px',
+                  background: 'linear-gradient(135deg, #1e3a8a, #7c3aed)',
+                  color: 'white',
+                  borderRadius: '12px',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '1.1em',
+                  boxShadow: '0 4px 15px rgba(30, 58, 138, 0.4)'
+                }}
+              >
+                📎 Choose File
+              </label>
+
+              {uploadedFileName && (
+                <div style={{
+                  marginTop: '20px',
+                  padding: '15px',
+                  background: '#ecfdf5',
+                  border: '2px solid #86efac',
+                  borderRadius: '10px',
+                  display: 'inline-block'
+                }}>
+                  <div style={{ color: '#166534', fontWeight: 'bold', marginBottom: '5px' }}>
+                    ✅ File Selected:
+                  </div>
+                  <div style={{ color: '#059669' }}>
+                    {uploadedFileName}
+                  </div>
+                </div>
+              )}
+
+              <div style={{ marginTop: '25px', fontSize: '0.9em', color: '#9ca3af' }}>
+                Max file size: 50MB • Supports 10,000+ rows
+              </div>
+            </div>
+          )}
+
           <button 
             onClick={parseData} 
-            disabled={loading}
+            disabled={loading || (!rawData.trim() && inputMode === 'text')}
             style={{
               marginTop: '15px',
               padding: '15px 40px',
@@ -1078,6 +1657,32 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
           }}>
             <AlertCircle size={24} />
             {error}
+          </div>
+        )}
+
+        {/* Dataset Size Warning Banner */}
+        {metrics && metrics.dataPoints < 50 && (
+          <div style={{
+            background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
+            border: '2px solid #f59e0b',
+            borderRadius: '12px',
+            padding: '20px',
+            marginBottom: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '15px'
+          }}>
+            <AlertCircle size={32} style={{ color: '#92400e', flexShrink: 0 }} />
+            <div>
+              <div style={{ fontWeight: 'bold', color: '#92400e', fontSize: '1.1em', marginBottom: '5px' }}>
+                ⚠️ Limited Dataset Notice
+              </div>
+              <div style={{ color: '#78350f', lineHeight: '1.6' }}>
+                Analysis based on <strong>{metrics.dataPoints} data points</strong>. 
+                For more accurate insights and reliable trends, we recommend datasets with <strong>1000+ rows</strong>. 
+                Current analysis is suitable for demonstration and preliminary insights only.
+              </div>
+            </div>
           </div>
         )}
 
@@ -1805,27 +2410,116 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
               <h2 style={{ color: '#1e3a8a', margin: 0 }}>
                 📊 Analysis History & Performance Tracking
               </h2>
-              <button
-                onClick={() => {
-                  setShowHistory(!showHistory);
-                  if (!showHistory) fetchAnalysisHistory();
-                }}
-                style={{
-                  padding: '10px 20px',
-                  background: 'linear-gradient(135deg, #1e3a8a, #7c3aed)',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '10px',
-                  cursor: 'pointer',
-                  fontWeight: 'bold'
-                }}
-              >
-                {showHistory ? 'Hide History' : 'View Past Analyses'}
-              </button>
+              <div style={{ display: 'flex', gap: '10px' }}>
+                {loadedAnalysis && autoAnalysis && (
+                  <button
+                    onClick={performManualComparison}
+                    style={{
+                      padding: '10px 20px',
+                      background: 'linear-gradient(135deg, #10b981, #059669)',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '10px',
+                      cursor: 'pointer',
+                      fontWeight: 'bold',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '8px'
+                    }}
+                  >
+                    <TrendingUp size={18} />
+                    Compare Analyses
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    setShowHistory(!showHistory);
+                    if (!showHistory) fetchAnalysisHistory();
+                  }}
+                  style={{
+                    padding: '10px 20px',
+                    background: 'linear-gradient(135deg, #1e3a8a, #7c3aed)',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '10px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  {showHistory ? 'Hide History' : 'View Past Analyses'}
+                </button>
+              </div>
             </div>
 
-            {/* Historical Comparison Display */}
-            {comparison && comparison.hasHistory && (
+            {/* Show loaded analysis indicator */}
+            {loadedAnalysis && (
+              <div style={{
+                background: '#f0f9ff',
+                border: '2px solid #3b82f6',
+                borderRadius: '12px',
+                padding: '15px',
+                marginBottom: '20px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <div>
+                  <div style={{ fontWeight: 'bold', color: '#1e3a8a', marginBottom: '5px' }}>
+                    📂 Loaded Analysis Ready for Comparison
+                  </div>
+                  <div style={{ fontSize: '0.9em', color: '#6b7280' }}>
+                    Industry: {loadedAnalysis.industryType} • Revenue: ₹{loadedAnalysis.metrics.totalRevenue.toLocaleString()}
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    setLoadedAnalysis(null);
+                    setShowComparison(false);
+                    setComparison(null);
+                  }}
+                  style={{
+                    padding: '8px 16px',
+                    background: '#ef4444',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold'
+                  }}
+                >
+                  Clear
+                </button>
+              </div>
+            )}
+
+            {/* Comparison Display */}
+            {showComparison && comparison && comparison.canCompare === false && (
+              <div style={{
+                background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
+                border: '2px solid #f59e0b',
+                borderRadius: '12px',
+                padding: '20px',
+                marginBottom: '20px'
+              }}>
+                <h3 style={{ margin: '0 0 15px 0', color: '#92400e', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <AlertCircle size={24} />
+                  ⚠️ Comparison Not Available
+                </h3>
+                
+                <div style={{
+                  background: 'white',
+                  borderRadius: '10px',
+                  padding: '15px',
+                  whiteSpace: 'pre-wrap',
+                  lineHeight: '1.6',
+                  color: '#1f2937'
+                }}>
+                  {comparison.warningMessage}
+                </div>
+              </div>
+            )}
+
+            {showComparison && comparison && comparison.canCompare && (
               <div style={{
                 background: 'linear-gradient(135deg, #fef3c7, #fde68a)',
                 border: '2px solid #f59e0b',
@@ -1835,44 +2529,81 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
               }}>
                 <h3 style={{ margin: '0 0 15px 0', color: '#92400e', display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <TrendingUp size={24} />
-                  📈 Performance vs Historical Average
+                  📈 Side-by-Side Comparison
                 </h3>
                 
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px', marginBottom: '15px' }}>
-                  <div style={{ background: 'white', padding: '15px', borderRadius: '10px' }}>
-                    <div style={{ color: '#92400e', fontSize: '0.9em', marginBottom: '5px' }}>Current Revenue</div>
-                    <div style={{ fontSize: '1.5em', fontWeight: 'bold', color: '#1e3a8a' }}>
-                      ₹{comparison.metrics.current.totalRevenue.toLocaleString()}
-                    </div>
-                  </div>
-                  
-                  <div style={{ background: 'white', padding: '15px', borderRadius: '10px' }}>
-                    <div style={{ color: '#92400e', fontSize: '0.9em', marginBottom: '5px' }}>Past Average</div>
-                    <div style={{ fontSize: '1.5em', fontWeight: 'bold', color: '#6b7280' }}>
-                      ₹{comparison.metrics.pastAverage.totalRevenue.toLocaleString()}
-                    </div>
-                  </div>
-                  
-                  <div style={{ background: 'white', padding: '15px', borderRadius: '10px' }}>
-                    <div style={{ color: '#92400e', fontSize: '0.9em', marginBottom: '5px' }}>Change</div>
-                    <div style={{ 
-                      fontSize: '1.5em', 
-                      fontWeight: 'bold', 
-                      color: parseFloat(comparison.metrics.changes.revenueChange) > 0 ? '#10b981' : '#ef4444'
-                    }}>
-                      {parseFloat(comparison.metrics.changes.revenueChange) > 0 ? '+' : ''}
-                      {comparison.metrics.changes.revenueChange}%
-                    </div>
-                  </div>
-                  
-                  <div style={{ background: 'white', padding: '15px', borderRadius: '10px' }}>
-                    <div style={{ color: '#92400e', fontSize: '0.9em', marginBottom: '5px' }}>Analyses Compared</div>
-                    <div style={{ fontSize: '1.5em', fontWeight: 'bold', color: '#1e3a8a' }}>
-                      {comparison.pastAnalysesCount}
-                    </div>
-                  </div>
+                {/* Comparison Table */}
+                <div style={{
+                  background: 'white',
+                  borderRadius: '10px',
+                  padding: '20px',
+                  marginBottom: '15px',
+                  overflowX: 'auto'
+                }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '2px solid #e5e7eb' }}>
+                        <th style={{ padding: '12px', textAlign: 'left', color: '#1e3a8a', fontWeight: 'bold' }}>Metric</th>
+                        <th style={{ padding: '12px', textAlign: 'right', color: '#10b981', fontWeight: 'bold' }}>Current Analysis</th>
+                        <th style={{ padding: '12px', textAlign: 'right', color: '#6b7280', fontWeight: 'bold' }}>Loaded Analysis</th>
+                        <th style={{ padding: '12px', textAlign: 'right', color: '#f59e0b', fontWeight: 'bold' }}>Change</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr style={{ borderBottom: '1px solid #f3f4f6' }}>
+                        <td style={{ padding: '12px', fontWeight: '600' }}>Total Revenue</td>
+                        <td style={{ padding: '12px', textAlign: 'right', color: '#10b981' }}>
+                          ₹{comparison.metrics.current.totalRevenue.toLocaleString()}
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', color: '#6b7280' }}>
+                          ₹{comparison.metrics.past.totalRevenue.toLocaleString()}
+                        </td>
+                        <td style={{ 
+                          padding: '12px', 
+                          textAlign: 'right', 
+                          fontWeight: 'bold',
+                          color: parseFloat(comparison.metrics.changes.revenueChange) > 0 ? '#10b981' : '#ef4444'
+                        }}>
+                          {parseFloat(comparison.metrics.changes.revenueChange) > 0 ? '+' : ''}
+                          {comparison.metrics.changes.revenueChange}%
+                        </td>
+                      </tr>
+                      <tr style={{ borderBottom: '1px solid #f3f4f6' }}>
+                        <td style={{ padding: '12px', fontWeight: '600' }}>Growth Rate</td>
+                        <td style={{ padding: '12px', textAlign: 'right', color: '#10b981' }}>
+                          {comparison.metrics.current.growthRate.toFixed(2)}%
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', color: '#6b7280' }}>
+                          {comparison.metrics.past.growthRate.toFixed(2)}%
+                        </td>
+                        <td style={{ 
+                          padding: '12px', 
+                          textAlign: 'right', 
+                          fontWeight: 'bold',
+                          color: parseFloat(comparison.metrics.changes.growthChange) > 0 ? '#10b981' : '#ef4444'
+                        }}>
+                          {parseFloat(comparison.metrics.changes.growthChange) > 0 ? '+' : ''}
+                          {comparison.metrics.changes.growthChange}%
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style={{ padding: '12px', fontWeight: '600' }}>Data Points</td>
+                        <td style={{ padding: '12px', textAlign: 'right', color: '#10b981' }}>
+                          {comparison.metrics.current.dataPoints}
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', color: '#6b7280' }}>
+                          {comparison.metrics.past.dataPoints}
+                        </td>
+                        <td style={{ padding: '12px', textAlign: 'right', color: '#3b82f6', fontWeight: 'bold' }}>
+                          {comparison.metrics.current.dataPoints - comparison.metrics.past.dataPoints > 0 ? '+' : ''}
+                          {comparison.metrics.current.dataPoints - comparison.metrics.past.dataPoints}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>
 
+                {/* AI Insight */}
                 <div style={{
                   background: 'white',
                   borderRadius: '10px',
@@ -1933,7 +2664,7 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
                               })}
                             </div>
                             <div style={{ fontSize: '0.9em', color: '#6b7280' }}>
-                              Type: {item.dataType || 'Sales'} • {item.analysis?.metrics?.dataPoints || 0} data points
+                              Industry: {item.industryType || 'Unknown'} • {item.analysis?.metrics?.dataPoints || 0} data points
                             </div>
                           </div>
                           <div style={{
@@ -1944,7 +2675,7 @@ Keep it professional but friendly. Avoid bullet points - write in flowing paragr
                             fontSize: '0.9em',
                             fontWeight: 'bold'
                           }}>
-                            Load
+                            Load for Comparison
                           </div>
                         </div>
                         
