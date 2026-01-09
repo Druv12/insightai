@@ -11,13 +11,13 @@ import {
 
 // Firebase Configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyC6tyG7RSVE-UBBmgQUzfSHBTd4EozWVqM",
-  authDomain: "insightai-app-v2.firebaseapp.com",
-  projectId: "insightai-app-v2",
-  storageBucket: "insightai-app-v2.firebasestorage.app",
-  messagingSenderId: "265470276222",
-  appId: "1:265470276222:web:bf6d6de264c145eb2b1e2f",
-  measurementId: "G-KG6VZSV4E3"
+  apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
+  authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN,
+  projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID,
+  storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID,
+  appId: process.env.REACT_APP_FIREBASE_APP_ID,
+  measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID
 };
 
 console.log('🔥 [FIREBASE] Initializing...');

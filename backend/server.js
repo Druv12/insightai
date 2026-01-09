@@ -430,10 +430,11 @@ function validateData(csvData) {
 // GROQ API HELPER WITH DETAILED LOGGING
 // ============================================
 async function callGroqAPI(messages) {
-  console.log('🤖 [GROQ] Starting API call...');
-  console.log('🤖 [GROQ] API Key present:', !!GROQ_API_KEY);
-  console.log('🤖 [GROQ] API Key length:', GROQ_API_KEY?.length || 0);
-  console.log('🤖 [GROQ] API Key prefix:', GROQ_API_KEY?.substring(0, 8) || 'N/A');
+  // ✅ SECURE: Conditional logging only in development
+  if (process.env.NODE_ENV === 'development') {
+    console.log('🤖 [GROQ] Starting API call...');
+    console.log('🤖 [GROQ] API Key present:', !!GROQ_API_KEY);
+  }
   
   if (!GROQ_API_KEY) {
     console.error('❌ [GROQ] API Key is missing!');
@@ -442,11 +443,13 @@ async function callGroqAPI(messages) {
 
   if (!GROQ_API_KEY.startsWith('gsk_')) {
     console.error('❌ [GROQ] Invalid API Key format!');
-    console.error('   Expected: gsk_...');
-    console.error('   Got:', GROQ_API_KEY.substring(0, 10) + '...');
+    // ✅ SECURE: No key details in production
+    if (process.env.NODE_ENV === 'development') {
+      console.error('   Expected: gsk_...');
+      console.error('   Got:', GROQ_API_KEY.substring(0, 10) + '...');
+    }
     throw new Error('Invalid GROQ_API_KEY format. Key should start with "gsk_"');
   }
-
   const requestPayload = {
     model: 'llama-3.3-70b-versatile',
     messages: messages,

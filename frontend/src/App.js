@@ -1193,6 +1193,7 @@ Provide a concise comparison insight (3-4 sentences) highlighting key difference
   };
 
 // Loading Screen with DEBUG info
+// ✅ CLEAN Loading Screen (No Debug Info)
 if (authLoading) {
   return (
     <div style={{ 
@@ -1204,24 +1205,36 @@ if (authLoading) {
       justifyContent: 'center',
       gap: '20px'
     }}>
-      <div style={{ color: 'white', fontSize: '2em', fontWeight: 'bold' }}>
+      <div style={{ 
+        color: 'white', 
+        fontSize: '2em', 
+        fontWeight: 'bold',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '15px'
+      }}>
         Loading InsightAI... 🧠
+        {/* Loading spinner */}
+        <div style={{
+          width: '30px',
+          height: '30px',
+          border: '4px solid rgba(255,255,255,0.3)',
+          borderTop: '4px solid white',
+          borderRadius: '50%',
+          animation: 'spin 1s linear infinite'
+        }}></div>
       </div>
-      <div style={{ color: 'white', fontSize: '1em', background: 'rgba(0,0,0,0.3)', padding: '20px', borderRadius: '10px', maxWidth: '600px' }}>
-        <div>🔍 Debug Info:</div>
-        <div>• Auth Loading: {authLoading ? 'YES' : 'NO'}</div>
-        <div>• User: {user ? user.email : 'NONE'}</div>
-        <div>• Current URL: {window.location.href}</div>
-        <div>• Stored Token: {localStorage.getItem('authToken') ? 'EXISTS' : 'MISSING'}</div>
-        <div>• Session Storage: {sessionStorage.getItem('signingIn') || 'NONE'}</div>
-      </div>
-      <div style={{ color: 'yellow', fontSize: '0.9em' }}>
-        Check browser console (F12) for detailed logs
-      </div>
+      
+      {/* Add CSS animation */}
+      <style>{`
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 }
-
   // Login Screen
   if (!user) {
     return (
