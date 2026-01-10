@@ -310,33 +310,43 @@ const requireMongoDB = (req, res, next) => {
   next();
 };
 
-// Firebase Authentication - SECURE VERSION
+// ✅ Initialize Firebase Admin with Base64 Support
 let admin;
 try {
+  let serviceAccount;
+  
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    // Production: Read from base64 environment variable
+    console.log('🔑 Loading Firebase credentials from base64 environment variable...');
+    const base64Json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+    const jsonString = Buffer.from(base64Json, 'base64').toString('utf-8');
+    serviceAccount = JSON.parse(jsonString);
+    console.log('✅ Firebase credentials decoded from base64');
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    // Alternative: Read from file path
+    console.log('🔑 Loading Firebase credentials from file path...');
+    serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
+  } else {
+    // Local development: Read from local file
+    console.log('🔑 Loading Firebase credentials from local file...');
+    serviceAccount = require('./firebase-service-account.json');
+  }
+
   admin = require('firebase-admin');
   
-  // Support both environment variable JSON string AND file path
-  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
-    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-    : process.env.FIREBASE_SERVICE_ACCOUNT_PATH 
-      ? require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
-      : null;
-  
-  if (!serviceAccount) {
-    throw new Error('Firebase credentials not configured');
-  }
-  
   if (!admin.apps.length) {
-    admin.initializeApp({ 
-      credential: admin.credential.cert(serviceAccount) 
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
     });
   }
-  console.log('✅ Firebase Admin initialized');
+  
+  console.log('✅ Firebase Admin initialized successfully');
+  console.log('✅ Project ID:', serviceAccount.project_id);
+  
 } catch (error) {
-  console.error('⚠️ Firebase Admin initialization failed:', error.message);
+  console.error('❌ Firebase Admin initialization failed:', error.message);
   console.log('🔓 Running in NO-AUTH mode for testing');
 }
-
 const verifyToken = async (req, res, next) => {
   try {
     if (!admin) {
