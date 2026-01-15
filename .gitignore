@@ -1,0 +1,43 @@
+# Node modules - MUST IGNORE
+**/node_modules/
+node_modules
+/node_modules
+./node_modules
+
+# Build artifacts with long paths
+**/android/build/
+**/android/.gradle/
+**/.transforms/
+**/*.dex
+**/bundleLib*/
+
+# Dependencies
+package-lock.json
+yarn.lock
+
+# Environment
+.env
+.env.*
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build outputs
+build/
+dist/
+.cache/
+
+# Mobile specific
+android/
+ios/
+*.apk
+*.ipa
+
+# Logs
+*.log
