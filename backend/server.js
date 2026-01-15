@@ -1095,6 +1095,28 @@ app.get('/api/health', (req, res) => {
   res.status(statusCode).json(health);
 });
 
+// Root welcome route - ADD THIS SECTION
+app.get('/', (req, res) => {
+  res.json({
+    message: '🚀 InsightAI Backend API',
+    status: 'running',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      health: '/api/health',
+      demoDatasets: '/api/demo-datasets',
+      uploadFile: '/api/upload-file',
+      parseData: '/api/parse-data',
+      analyze: '/api/analyze',
+      saveAnalysis: '/api/save-analysis',
+      analysisHistory: '/api/analysis-history',
+      compareAnalysis: '/api/compare-analysis'
+    },
+    docs: 'https://github.com/Druv12/insightai',
+    frontend: process.env.FRONTEND_URL || 'Deploy frontend separately'
+  });
+});
+
 app.post('/api/auth/login', verifyToken, async (req, res) => {
   try {
     const { uid, email, name, picture } = req.user;
