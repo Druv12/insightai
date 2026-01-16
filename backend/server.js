@@ -1094,29 +1094,6 @@ app.get('/api/health', (req, res) => {
   
   res.status(statusCode).json(health);
 });
-
-// Root welcome route - ADD THIS SECTION
-app.get('/', (req, res) => {
-  res.json({
-    message: '🚀 InsightAI Backend API',
-    status: 'running',
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    endpoints: {
-      health: '/api/health',
-      demoDatasets: '/api/demo-datasets',
-      uploadFile: '/api/upload-file',
-      parseData: '/api/parse-data',
-      analyze: '/api/analyze',
-      saveAnalysis: '/api/save-analysis',
-      analysisHistory: '/api/analysis-history',
-      compareAnalysis: '/api/compare-analysis'
-    },
-    docs: 'https://github.com/Druv12/insightai',
-    frontend: process.env.FRONTEND_URL || 'Deploy frontend separately'
-  });
-});
-
 app.post('/api/auth/login', verifyToken, async (req, res) => {
   try {
     const { uid, email, name, picture } = req.user;
@@ -2146,7 +2123,33 @@ Use Indian Rupee lakhs/crores format. Be direct and specific to ${currentIndustr
 const buildPath = path.join(__dirname, '../frontend/build');
 if (fs.existsSync(buildPath)) {
   console.log('📦 Serving frontend from:', buildPath);
+  
+  // Serve static files (CSS, JS, images)
   app.use(express.static(buildPath));
+  
+  // API info endpoint (accessible at /api)
+  app.get('/api', (req, res) => {
+    res.json({
+      message: '🚀 InsightAI Backend API',
+      status: 'running',
+      version: '1.0.0',
+      timestamp: new Date().toISOString(),
+      endpoints: {
+        health: '/api/health',
+        demoDatasets: '/api/demo-datasets',
+        uploadFile: '/api/upload-file',
+        parseData: '/api/parse-data',
+        analyze: '/api/analyze',
+        saveAnalysis: '/api/save-analysis',
+        analysisHistory: '/api/analysis-history',
+        compareAnalysis: '/api/compare-analysis'
+      },
+      docs: 'https://github.com/Druv12/insightai',
+      frontend: 'https://insightais.onrender.com'
+    });
+  });
+  
+  // Serve React app for all non-API routes (THIS MUST BE LAST)
   app.get('*', (req, res) => {
     if (!req.path.startsWith('/api')) {
       res.sendFile(path.join(buildPath, 'index.html'));
