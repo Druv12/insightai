@@ -1,4 +1,4 @@
-﻿FROM node:18-slim
+﻿FROM node:20-slim
 
 WORKDIR /app
 
@@ -7,14 +7,19 @@ COPY frontend/package*.json ./frontend/
 COPY backend/package*.json ./backend/
 
 # Install dependencies
-RUN cd frontend && npm ci --only=production
-RUN cd backend && npm ci --only=production
+WORKDIR /app/frontend
+RUN npm install
+
+WORKDIR /app/backend
+RUN npm install
 
 # Copy source code
+WORKDIR /app
 COPY . .
 
 # Build frontend
-RUN cd frontend && npm run build
+WORKDIR /app/frontend
+RUN npm run build
 
 # Expose Hugging Face port
 EXPOSE 7860
