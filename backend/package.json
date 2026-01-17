@@ -21,7 +21,10 @@
     "mongoose": "^9.1.1",
     "multer": "^2.0.2",
     "pdf-parse": "^2.4.5",
+<<<<<<< HEAD
     "pdf.js-extract": "^0.2.1",
+=======
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

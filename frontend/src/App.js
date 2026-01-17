@@ -1,7 +1,12 @@
   import React, { useState, useRef, useEffect } from 'react';
   import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area, ScatterChart, Scatter, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Funnel, FunnelChart } from 'recharts';
   import { TrendingUp, TrendingDown, DollarSign, Package, Users, AlertCircle, CheckCircle, Lightbulb, Download, Mic, MicOff, Volume2, VolumeX, Play, Pause, BarChart3, PieChart as PieChartIcon, LineChart as LineChartIcon, Activity, LogOut, User, SkipBack, SkipForward, RotateCcw } from 'lucide-react';
+<<<<<<< HEAD
   import { auth, signInWithGoogle, logout, checkRedirectResult, onAuthChange } from './firebase';
+=======
+  import { auth, signInWithGoogle, logout } from './firebase';
+  import { onAuthStateChanged } from 'firebase/auth';
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
 
   // const API_URL = process.env.REACT_APP_API_URL || '';
   const API_URL = '';
@@ -24,10 +29,13 @@
     const [showHistory, setShowHistory] = useState(false);
     // ✅ ADD THESE LINES
 const [statistics, setStatistics] = useState(null);
+<<<<<<< HEAD
 const [schemaMetrics, setSchemaMetrics] = useState(null);
 const [availableColumns, setAvailableColumns] = useState(null);
 const [sqlQueries, setSQLQueries] = useState(null);
 const [activeMetricsTab, setActiveMetricsTab] = useState('industry');
+=======
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
 const [showStatsSection, setShowStatsSection] = useState(false); // Optional: control visibility
   const [comparison, setComparison] = useState(null);
   const [currentAnalysisId, setCurrentAnalysisId] = useState(null);
@@ -97,11 +105,16 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
       }
     };
 
+<<<<<<< HEAD
   // Check authentication state - REDIRECT MODE
+=======
+  // Check authentication state - SIMPLIFIED for POPUP
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
   useEffect(() => {
     console.log('🔍 [APP] Initializing authentication...');
     let isMounted = true;
 
+<<<<<<< HEAD
     // Check if we just came back from Google redirect
     const handleRedirect = async () => {
       try {
@@ -133,11 +146,32 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
         try {
           const token = await currentUser.getIdToken(true);
           localStorage.setItem('authToken', token);
+=======
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (!isMounted) return;
+
+      console.log('🔐 [APP] Auth state changed');
+      console.log('🔐 [APP] Current user:', currentUser ? currentUser.email : 'none');
+      
+      if (currentUser) {
+        console.log('✅ [APP] User authenticated:', currentUser.email);
+        console.log('✅ [APP] User UID:', currentUser.uid);
+        
+        // Store fresh token
+        try {
+          const token = await currentUser.getIdToken(true);
+          localStorage.setItem('authToken', token);
+          console.log('✅ [APP] Token stored');
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
         } catch (e) {
           console.error('⚠️ [APP] Token storage failed:', e);
         }
         
         setUser(currentUser);
+<<<<<<< HEAD
+=======
+        
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
       } else {
         console.log('ℹ️ [APP] No user signed in');
         setUser(null);
@@ -417,18 +451,35 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
       }
     };
 
+<<<<<<< HEAD
     // Handle Google Sign-In
   const handleSignIn = async () => {
     try {
       console.log('🔐 [APP] Sign-in button clicked');
       await signInWithGoogle(); // This will redirect - no return value
       // User will be redirected to Google, then back to app
+=======
+  // Handle Google Sign-In
+  const handleSignIn = async () => {
+    try {
+      console.log('🔐 [APP] Sign-in button clicked');
+      const user = await signInWithGoogle();
+      
+      if (user) {
+        console.log('✅ [APP] Sign-in successful:', user.email);
+        speak('Welcome! You have successfully signed in.');
+      }
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
     } catch (error) {
       console.error('❌ [APP] Sign-in error:', error);
       setError(error.message || 'Failed to sign in. Please try again.');
       speak('Sign in failed. Please try again.');
     }
   };
+<<<<<<< HEAD
+=======
+
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
     // Handle Logout
     const handleLogout = async () => {
       try {
@@ -612,9 +663,12 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
           statistics: result.statistics
         });
         setStatistics(result.statistics);
+<<<<<<< HEAD
 setSchemaMetrics(result.schemaMetrics);
 setAvailableColumns(result.availableColumns);
 setSQLQueries(result.sqlQueries);
+=======
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
         
         // ✅ FIXED: Only run if API succeeds
         await saveAnalysisToMongo(data, result.content, calculateMetrics(data));
@@ -1026,10 +1080,14 @@ setSQLQueries(result.sqlQueries);
 
         if (result.success) {
           setAnalysis(result.content);
+<<<<<<< HEAD
           setStatistics(result.statistics);
 setSchemaMetrics(result.schemaMetrics);
 setAvailableColumns(result.availableColumns);
 setSQLQueries(result.sqlQueries);
+=======
+          setStatistics(result.statistics);  // ← NEW: Capture stats for custom questions
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
           setTimeout(() => {
             speak(result.content);
           }, 500);
@@ -1879,6 +1937,7 @@ setSQLQueries(result.sqlQueries);
             </div>
           )}
         </div>
+<<<<<<< HEAD
   </div>
       )}
     </div>
@@ -2226,6 +2285,12 @@ setSQLQueries(result.sqlQueries);
             </div>
           )}
           {/* ==================== END OF INDUSTRY METRICS & SQL ==================== */}
+=======
+      </div>
+    )}
+  </div>
+)}
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
           {/* Visual Analytics Dashboard - Chart Section */}
           {chartData.length > 0 && revenueKey && (
             <div style={{

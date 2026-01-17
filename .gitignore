@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ﻿node_modules/
 .env
 *.log
@@ -13,3 +14,48 @@ hf-deploy/
 
 firebase-base64.txt
 firebase-service-account.json
+=======
+# Node modules - MUST IGNORE
+**/node_modules/
+node_modules
+/node_modules
+./node_modules
+
+# Build artifacts with long paths
+**/android/build/
+**/android/.gradle/
+**/.transforms/
+**/*.dex
+**/bundleLib*/
+
+# Dependencies
+package-lock.json
+yarn.lock
+
+# Environment
+.env
+.env.*
+*.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Build outputs
+build/
+dist/
+.cache/
+
+# Mobile specific
+android/
+ios/
+*.apk
+*.ipa
+
+# Logs
+*.log
+>>>>>>> 0788675c3d01576e6262a32ef183063e1f388de2
