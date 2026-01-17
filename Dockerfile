@@ -1,23 +1,24 @@
-﻿FROM node:18
+﻿FROM node:18-slim
 
 WORKDIR /app
 
+# Copy package files
 COPY frontend/package*.json ./frontend/
 COPY backend/package*.json ./backend/
 
-WORKDIR /app/frontend
-RUN npm install
+# Install dependencies
+RUN cd frontend && npm ci --only=production
+RUN cd backend && npm ci --only=production
 
-WORKDIR /app/backend
-RUN npm install
-
-WORKDIR /app
+# Copy source code
 COPY . .
 
-WORKDIR /app/frontend
-RUN npm run build
+# Build frontend
+RUN cd frontend && npm run build
 
+# Expose Hugging Face port
 EXPOSE 7860
 
+# Start backend server
 WORKDIR /app/backend
-CMD ["node", "server.js"]
+CMD ["npm", "start"]

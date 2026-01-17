@@ -1,0 +1,12 @@
+﻿node_modules/
+.env
+*.log
+.DS_Store
+frontend/build/
+backend/uploads/
+npm-debug.log*
+yarn-debug.log*
+android/
+InsightAIMobile/
+backup_jan17_2025/
+hf-deploy/

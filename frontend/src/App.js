@@ -1,8 +1,7 @@
   import React, { useState, useRef, useEffect } from 'react';
   import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area, ScatterChart, Scatter, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Funnel, FunnelChart } from 'recharts';
   import { TrendingUp, TrendingDown, DollarSign, Package, Users, AlertCircle, CheckCircle, Lightbulb, Download, Mic, MicOff, Volume2, VolumeX, Play, Pause, BarChart3, PieChart as PieChartIcon, LineChart as LineChartIcon, Activity, LogOut, User, SkipBack, SkipForward, RotateCcw } from 'lucide-react';
-  import { auth, signInWithGoogle, logout } from './firebase';
-  import { onAuthStateChanged } from 'firebase/auth';
+  import { auth, signInWithGoogle, logout, checkRedirectResult, onAuthChange } from './firebase';
 
   // const API_URL = process.env.REACT_APP_API_URL || '';
   const API_URL = '';
@@ -25,6 +24,10 @@
     const [showHistory, setShowHistory] = useState(false);
     // ✅ ADD THESE LINES
 const [statistics, setStatistics] = useState(null);
+const [schemaMetrics, setSchemaMetrics] = useState(null);
+const [availableColumns, setAvailableColumns] = useState(null);
+const [sqlQueries, setSQLQueries] = useState(null);
+const [activeMetricsTab, setActiveMetricsTab] = useState('industry');
 const [showStatsSection, setShowStatsSection] = useState(false); // Optional: control visibility
   const [comparison, setComparison] = useState(null);
   const [currentAnalysisId, setCurrentAnalysisId] = useState(null);
@@ -94,32 +97,47 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
       }
     };
 
-  // Check authentication state - SIMPLIFIED for POPUP
+  // Check authentication state - REDIRECT MODE
   useEffect(() => {
     console.log('🔍 [APP] Initializing authentication...');
     let isMounted = true;
 
-    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    // Check if we just came back from Google redirect
+    const handleRedirect = async () => {
+      try {
+        const user = await checkRedirectResult();
+        if (user && isMounted) {
+          console.log('✅ [APP] User signed in after redirect:', user.email);
+          
+          // Store token
+          const token = await user.getIdToken(true);
+          localStorage.setItem('authToken', token);
+          
+          setUser(user);
+        }
+      } catch (error) {
+        console.error('❌ [APP] Redirect error:', error);
+        alert(`Sign-in failed: ${error.message}`);
+      }
+    };
+    
+    handleRedirect();
+    
+    // Listen for auth state changes
+    const unsubscribe = onAuthChange(async (currentUser) => {
       if (!isMounted) return;
-
-      console.log('🔐 [APP] Auth state changed');
-      console.log('🔐 [APP] Current user:', currentUser ? currentUser.email : 'none');
       
       if (currentUser) {
         console.log('✅ [APP] User authenticated:', currentUser.email);
-        console.log('✅ [APP] User UID:', currentUser.uid);
         
-        // Store fresh token
         try {
           const token = await currentUser.getIdToken(true);
           localStorage.setItem('authToken', token);
-          console.log('✅ [APP] Token stored');
         } catch (e) {
           console.error('⚠️ [APP] Token storage failed:', e);
         }
         
         setUser(currentUser);
-        
       } else {
         console.log('ℹ️ [APP] No user signed in');
         setUser(null);
@@ -399,23 +417,18 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
       }
     };
 
-  // Handle Google Sign-In
+    // Handle Google Sign-In
   const handleSignIn = async () => {
     try {
       console.log('🔐 [APP] Sign-in button clicked');
-      const user = await signInWithGoogle();
-      
-      if (user) {
-        console.log('✅ [APP] Sign-in successful:', user.email);
-        speak('Welcome! You have successfully signed in.');
-      }
+      await signInWithGoogle(); // This will redirect - no return value
+      // User will be redirected to Google, then back to app
     } catch (error) {
       console.error('❌ [APP] Sign-in error:', error);
       setError(error.message || 'Failed to sign in. Please try again.');
       speak('Sign in failed. Please try again.');
     }
   };
-
     // Handle Logout
     const handleLogout = async () => {
       try {
@@ -599,6 +612,9 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
           statistics: result.statistics
         });
         setStatistics(result.statistics);
+setSchemaMetrics(result.schemaMetrics);
+setAvailableColumns(result.availableColumns);
+setSQLQueries(result.sqlQueries);
         
         // ✅ FIXED: Only run if API succeeds
         await saveAnalysisToMongo(data, result.content, calculateMetrics(data));
@@ -1010,7 +1026,10 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
 
         if (result.success) {
           setAnalysis(result.content);
-          setStatistics(result.statistics);  // ← NEW: Capture stats for custom questions
+          setStatistics(result.statistics);
+setSchemaMetrics(result.schemaMetrics);
+setAvailableColumns(result.availableColumns);
+setSQLQueries(result.sqlQueries);
           setTimeout(() => {
             speak(result.content);
           }, 500);
@@ -1860,10 +1879,353 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
             </div>
           )}
         </div>
-      </div>
-    )}
   </div>
-)}
+      )}
+    </div>
+  )}
+
+          {/* ==================== NEW: INDUSTRY METRICS & SQL SECTION ==================== */}        
+           {schemaMetrics && availableColumns && (
+            <div style={{
+              background: 'rgba(255,255,255,0.95)',
+              borderRadius: '20px',
+              padding: '30px',
+              marginBottom: '20px',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.2)'
+            }}>
+              {/* Tab Navigation */}
+              <div style={{
+                display: 'flex',
+                gap: '10px',
+                marginBottom: '20px',
+                borderBottom: '2px solid #e5e7eb',
+                paddingBottom: '10px'
+              }}>
+                <button
+                  onClick={() => setActiveMetricsTab('industry')}
+                  style={{
+                    padding: '12px 24px',
+                    background: activeMetricsTab === 'industry' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : 'white',
+                    color: activeMetricsTab === 'industry' ? 'white' : '#374151',
+                    border: 'none',
+                    borderRadius: '8px 8px 0 0',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    fontSize: '1em'
+                  }}
+                >
+                  💼 Industry Metrics
+                </button>
+                <button
+                  onClick={() => setActiveMetricsTab('sql')}
+                  style={{
+                    padding: '12px 24px',
+                    background: activeMetricsTab === 'sql' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : 'white',
+                    color: activeMetricsTab === 'sql' ? 'white' : '#374151',
+                    border: 'none',
+                    borderRadius: '8px 8px 0 0',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    fontSize: '1em'
+                  }}
+                >
+                  🗄️ SQL Queries
+                </button>
+                <button
+                  onClick={() => setActiveMetricsTab('schema')}
+                  style={{
+                    padding: '12px 24px',
+                    background: activeMetricsTab === 'schema' ? 'linear-gradient(135deg, #3b82f6, #2563eb)' : 'white',
+                    color: activeMetricsTab === 'schema' ? 'white' : '#374151',
+                    border: 'none',
+                    borderRadius: '8px 8px 0 0',
+                    fontWeight: '600',
+                    cursor: 'pointer',
+                    fontSize: '1em'
+                  }}
+                >
+                  🔍 Data Schema
+                </button>
+              </div>
+
+              {/* INDUSTRY METRICS TAB */}
+              {activeMetricsTab === 'industry' && (
+                <div>
+                  <h2 style={{ fontSize: '1.8em', fontWeight: 'bold', marginBottom: '20px', color: '#1f2937' }}>
+                    💼 Industry-Specific Metrics
+                  </h2>
+
+                  {/* Industry Type Badge */}
+                  <div style={{
+                    display: 'inline-block',
+                    background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
+                    color: 'white',
+                    padding: '10px 20px',
+                    borderRadius: '20px',
+                    fontWeight: 'bold',
+                    marginBottom: '20px',
+                    fontSize: '1.1em'
+                  }}>
+                    🏭 Industry: {autoAnalysis?.industryType?.toUpperCase() || 'BUSINESS'}
+                  </div>
+                  
+                  <div style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+                    gap: '20px',
+                    marginBottom: '30px'
+                  }}>
+                    {/* ARPU Card */}
+                    {schemaMetrics.arpu && (
+                      <div style={{
+                        background: 'white',
+                        borderRadius: '12px',
+                        padding: '24px',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                        border: '2px solid #8b5cf6'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                          <Users size={24} style={{ color: '#8b5cf6' }} />
+                          <h3 style={{ margin: 0, fontSize: '1em', color: '#6b7280' }}>ARPU</h3>
+                        </div>
+                        <p style={{ fontSize: '2em', fontWeight: 'bold', color: '#8b5cf6', margin: 0 }}>
+                          ₹{schemaMetrics.arpu.toLocaleString()}
+                        </p>
+                        <p style={{ fontSize: '0.9em', color: '#9ca3af', marginTop: '8px' }}>
+                          {schemaMetrics.uniqueUsers} unique users
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Growth Rate Card */}
+                    {schemaMetrics.growthRate && (
+                      <div style={{
+                        background: 'white',
+                        borderRadius: '12px',
+                        padding: '24px',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                        border: '2px solid #f59e0b'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                          <TrendingUp size={24} style={{ color: '#f59e0b' }} />
+                          <h3 style={{ margin: 0, fontSize: '1em', color: '#6b7280' }}>Growth Rate</h3>
+                        </div>
+                        <p style={{ fontSize: '2em', fontWeight: 'bold', color: '#f59e0b', margin: 0 }}>
+                          {schemaMetrics.growthRate > 0 ? '+' : ''}{schemaMetrics.growthRate.toFixed(2)}%
+                        </p>
+                        <p style={{ fontSize: '0.9em', color: '#9ca3af', marginTop: '8px' }}>
+                          Period over period
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Total Revenue Card */}
+                    {schemaMetrics.totalRevenue && (
+                      <div style={{
+                        background: 'white',
+                        borderRadius: '12px',
+                        padding: '24px',
+                        boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                        border: '2px solid #10b981'
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                          <DollarSign size={24} style={{ color: '#10b981' }} />
+                          <h3 style={{ margin: 0, fontSize: '1em', color: '#6b7280' }}>Total Revenue</h3>
+                        </div>
+                        <p style={{ fontSize: '2em', fontWeight: 'bold', color: '#10b981', margin: 0 }}>
+                          ₹{schemaMetrics.totalRevenue.toLocaleString()}
+                        </p>
+                        <p style={{ fontSize: '0.9em', color: '#9ca3af', marginTop: '8px' }}>
+                          Avg: ₹{schemaMetrics.avgRevenue?.toLocaleString()}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Top Products */}
+                  {schemaMetrics.topProducts && schemaMetrics.topProducts.length > 0 && (
+                    <div style={{
+                      background: 'white',
+                      borderRadius: '12px',
+                      padding: '24px',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                      marginBottom: '20px'
+                    }}>
+                      <h3 style={{ fontSize: '1.3em', fontWeight: 'bold', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <Package size={24} style={{ color: '#3b82f6' }} />
+                        Top Products by Revenue
+                      </h3>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        {schemaMetrics.topProducts.map((product, index) => (
+                          <div key={index} style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '12px',
+                            background: '#f3f4f6',
+                            borderRadius: '8px'
+                          }}>
+                            <span style={{ fontWeight: '600', color: '#374151' }}>
+                              {index + 1}. {product.product}
+                            </span>
+                            <span style={{ fontWeight: 'bold', color: '#10b981' }}>
+                              ₹{product.revenue.toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Channel Breakdown */}
+                  {schemaMetrics.channelBreakdown && (
+                    <div style={{
+                      background: 'white',
+                      borderRadius: '12px',
+                      padding: '24px',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                    }}>
+                      <h3 style={{ fontSize: '1.3em', fontWeight: 'bold', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        <Activity size={24} style={{ color: '#ec4899' }} />
+                        Channel Performance
+                      </h3>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                        {Object.entries(schemaMetrics.channelBreakdown).map(([channel, revenue], index) => (
+                          <div key={index} style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            padding: '12px',
+                            background: '#fef3f2',
+                            borderRadius: '8px'
+                          }}>
+                            <span style={{ fontWeight: '600', color: '#374151' }}>{channel}</span>
+                            <span style={{ fontWeight: 'bold', color: '#ec4899' }}>
+                              ₹{revenue.toLocaleString()}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* SQL QUERIES TAB */}
+              {activeMetricsTab === 'sql' && sqlQueries && (
+                <div>
+                  <h2 style={{ fontSize: '1.8em', fontWeight: 'bold', marginBottom: '20px', color: '#1f2937' }}>
+                    🗄️ Auto-Generated SQL Queries
+                  </h2>
+                  
+                  {sqlQueries.map((query, index) => (
+                    <div key={index} style={{
+                      background: 'white',
+                      borderRadius: '12px',
+                      padding: '24px',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
+                      marginBottom: '20px'
+                    }}>
+                      <h3 style={{ fontSize: '1.2em', fontWeight: 'bold', marginBottom: '16px', color: '#1f2937' }}>
+                        {query.section}
+                      </h3>
+                      
+                      <div style={{
+                        background: '#1e293b',
+                        color: '#e2e8f0',
+                        padding: '20px',
+                        borderRadius: '8px',
+                        fontFamily: 'Consolas, Monaco, monospace',
+                        fontSize: '0.9em',
+                        lineHeight: '1.6',
+                        overflow: 'auto',
+                        whiteSpace: 'pre-wrap'
+                      }}>
+                        <code>{query.sql}</code>
+                      </div>
+                      
+                      {query.note && (
+                        <div style={{
+                          marginTop: '12px',
+                          padding: '12px',
+                          background: '#f0fdf4',
+                          borderLeft: '4px solid #10b981',
+                          borderRadius: '4px',
+                          fontSize: '0.95em',
+                          color: '#065f46'
+                        }}>
+                          {query.note}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* SCHEMA DETECTION TAB */}
+              {activeMetricsTab === 'schema' && availableColumns && (
+                <div>
+                  <h2 style={{ fontSize: '1.8em', fontWeight: 'bold', marginBottom: '20px', color: '#1f2937' }}>
+                    🔍 Data Schema Detection
+                  </h2>
+                  
+                  <div style={{
+                    background: 'white',
+                    borderRadius: '12px',
+                    padding: '24px',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+                  }}>
+                    <h3 style={{ fontSize: '1.3em', fontWeight: 'bold', marginBottom: '20px' }}>
+                      Available Data Columns
+                    </h3>
+                    
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fill, minmax(250px, 1fr))',
+                      gap: '12px'
+                    }}>
+                      {Object.entries(availableColumns).map(([key, value]) => (
+                        <div key={key} style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '10px',
+                          padding: '12px',
+                          background: value ? '#f0fdf4' : '#fef2f2',
+                          borderRadius: '8px',
+                          border: `2px solid ${value ? '#10b981' : '#ef4444'}`
+                        }}>
+                          {value ? 
+                            <CheckCircle size={20} style={{ color: '#10b981' }} /> : 
+                            <AlertCircle size={20} style={{ color: '#ef4444' }} />
+                          }
+                          <span style={{ 
+                            fontWeight: '600', 
+                            color: value ? '#065f46' : '#991b1b',
+                            fontSize: '0.95em'
+                          }}>
+                            {key.replace(/([A-Z])/g, ' $1').replace(/^has /, '')}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{
+                      marginTop: '24px',
+                      padding: '16px',
+                      background: '#eff6ff',
+                      borderRadius: '8px',
+                      borderLeft: '4px solid #3b82f6'
+                    }}>
+                      <p style={{ margin: 0, color: '#1e40af', fontSize: '0.95em', lineHeight: '1.6' }}>
+                        <strong>💡 Tip:</strong> The analysis automatically detects your data structure and calculates industry-specific metrics. Green indicators show available data columns, while red shows missing columns that could unlock additional insights.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {/* ==================== END OF INDUSTRY METRICS & SQL ==================== */}
           {/* Visual Analytics Dashboard - Chart Section */}
           {chartData.length > 0 && revenueKey && (
             <div style={{

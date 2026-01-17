@@ -1,4 +1,4 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const mongoose = require('mongoose');
@@ -8,8 +8,10 @@ const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
 const statisticalAnalysis = require('./utils/statisticalAnalysis');
-const { PDFExtract } = require('pdf.js-extract');
-const pdfExtract = new PDFExtract();
+const { detectAvailableMetrics, detectIndustryType, generateIndustryMetrics } = require('./utils/schemaAwareAnalysis');
+const { generateSQLDocumentation, formatSQLForDisplay } = require('./utils/sqlDocumentation');
+const pdf = require('pdf-parse');
+
 const mammoth = require('mammoth');
 
 require('dotenv').config();
@@ -33,34 +35,21 @@ const sanitizeCSV = (csvData) => {
     .join('\n');
 };
 
-// Validate file MIME type with better PDF handling
+// Validate file MIME type (not just extension)
 const validateFileType = async (filePath, allowedTypes) => {
   try {
     const FileType = (await import('file-type')).default;
     const fileTypeResult = await FileType.fromFile(filePath);
     
-    // ✅ FIX 1: If file-type can't detect (common for text-based formats), allow it
     if (!fileTypeResult) {
-      console.log('⚠️ File type not detected by library - allowing (likely text/CSV)');
-      return true; // Allow files that can't be detected (CSVs, plain text)
+      // Some valid files don't have detectable MIME (like plain text CSV)
+      return true;
     }
     
-    // ✅ FIX 2: Check if detected type is in allowed list
-    const isAllowed = allowedTypes.includes(fileTypeResult.mime);
-    
-    if (!isAllowed) {
-      console.error(`❌ Invalid file type detected: ${fileTypeResult.mime}`);
-    }
-    
-    return isAllowed;
-    
+    return allowedTypes.includes(fileTypeResult.mime);
   } catch (error) {
-    console.error('⚠️ File type validation error:', error);
-    
-    // ✅ FIX 3: On error, allow the file (fail-open for user experience)
-    // The file extension check will still protect against basic attacks
-    console.log('⚠️ Validation failed - allowing file to proceed');
-    return true;
+    console.error('File type validation error:', error);
+    return false;
   }
 };
 
@@ -87,8 +76,8 @@ const validateDataType = (dataType) => {
 };
 const app = express();
 app.set('trust proxy', 1);
-const PORT = process.env.PORT || 7860;
 
+const PORT = process.env.PORT || 7860;
 // Middleware
 const rateLimit = require('express-rate-limit');
 const timeout = require('connect-timeout');
@@ -98,7 +87,7 @@ app.use((req, res, next) => {
   if (!req.timedout) next();
 });
 
-// ✅ SECURE: Restrict CORS to specific origins
+// âœ… SECURE: Restrict CORS to specific origins
 const allowedOrigins = process.env.NODE_ENV === 'production'
   ? [
       process.env.FRONTEND_URL, // e.g., 'https://insightai.vercel.app'
@@ -118,7 +107,7 @@ const corsOptions = {
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
-      console.warn('⚠️ Blocked CORS request from:', origin);
+      console.warn('âš ï¸ Blocked CORS request from:', origin);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -173,23 +162,23 @@ const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 // Validate GROQ API key format
 if (GROQ_API_KEY && !GROQ_API_KEY.startsWith('gsk_')) {
-  console.error('❌ GROQ_API_KEY appears to be invalid. Should start with "gsk_"');
+  console.error('âŒ GROQ_API_KEY appears to be invalid. Should start with "gsk_"');
   console.error('   Current key starts with:', GROQ_API_KEY.substring(0, 4));
 }
 
 if (!GROQ_API_KEY) {
-  console.error('❌ GROQ_API_KEY is missing! AI features will not work.');
+  console.error('âŒ GROQ_API_KEY is missing! AI features will not work.');
   console.error('   Please add GROQ_API_KEY to your .env file');
 }
 
-// ✅ SECURE: No key details exposed
-console.log('🔑 GROQ_API_KEY:', GROQ_API_KEY ? '✅ Configured' : '❌ Missing');
-console.log('🔑 MONGODB_URI:', MONGODB_URI ? '✅ Configured' : '❌ Missing');
+// âœ… SECURE: No key details exposed
+console.log('ðŸ”‘ GROQ_API_KEY:', GROQ_API_KEY ? 'âœ… Configured' : 'âŒ Missing');
+console.log('ðŸ”‘ MONGODB_URI:', MONGODB_URI ? 'âœ… Configured' : 'âŒ Missing');
 // Secure error handler - hides details in production
-// ✅ SECURE: Never expose internal errors
+// âœ… SECURE: Never expose internal errors
 const handleError = (res, error, customMessage = 'An error occurred') => {
   // Log full error server-side only
-  console.error('❌ Error Details [INTERNAL]:', {
+  console.error('âŒ Error Details [INTERNAL]:', {
     message: error.message,
     stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     timestamp: new Date().toISOString()
@@ -218,27 +207,27 @@ const connectDB = async () => {
       socketTimeoutMS: 45000,
     });
     
-    console.log('✅ MongoDB Connected Successfully');
-    console.log(`📊 Database: ${mongoose.connection.db.databaseName}`);
+    console.log('âœ… MongoDB Connected Successfully');
+    console.log(`ðŸ“Š Database: ${mongoose.connection.db.databaseName}`);
     isConnecting = false;
     
   } catch (error) {
-    console.error('❌ MongoDB Connection Failed:', error.message);
+    console.error('âŒ MongoDB Connection Failed:', error.message);
     isConnecting = false;
     
-    console.log('🔄 Retrying in 5 seconds...');
+    console.log('ðŸ”„ Retrying in 5 seconds...');
     setTimeout(connectDB, 5000);
   }
 };
 
 // Connection event handlers
 mongoose.connection.on('disconnected', () => {
-  console.log('⚠️ MongoDB disconnected. Attempting to reconnect...');
+  console.log('âš ï¸ MongoDB disconnected. Attempting to reconnect...');
   connectDB();
 });
 
 mongoose.connection.on('error', (err) => {
-  console.error('❌ MongoDB error:', err);
+  console.error('âŒ MongoDB error:', err);
 });
 
 // Start connection
@@ -325,44 +314,25 @@ const requireMongoDB = (req, res, next) => {
   next();
 };
 
-// ✅ Initialize Firebase Admin with Environment Variables
+// âœ… Initialize Firebase Admin with Base64 Support
 let admin;
 try {
   let serviceAccount;
   
-  // PRIORITY 1: Use environment variables (for Hugging Face/Docker)
-  if (process.env.FIREBASE_TYPE && process.env.FIREBASE_PRIVATE_KEY) {
-    console.log('🔑 Loading Firebase credentials from environment variables...');
-    serviceAccount = {
-      type: process.env.FIREBASE_TYPE,
-      project_id: process.env.FIREBASE_PROJECT_ID,
-      private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-      private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-      client_email: process.env.FIREBASE_CLIENT_EMAIL,
-      client_id: process.env.FIREBASE_CLIENT_ID,
-      auth_uri: "https://accounts.google.com/o/oauth2/auth",
-      token_uri: "https://oauth2.googleapis.com/token",
-      auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
-      client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL
-    };
-    console.log('✅ Firebase credentials loaded from environment variables');
-  }
-  // PRIORITY 2: Use base64 JSON (alternative method)
-  else if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    console.log('🔑 Loading Firebase credentials from base64 environment variable...');
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    // Production: Read from base64 environment variable
+    console.log('ðŸ”‘ Loading Firebase credentials from base64 environment variable...');
     const base64Json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
     const jsonString = Buffer.from(base64Json, 'base64').toString('utf-8');
     serviceAccount = JSON.parse(jsonString);
-    console.log('✅ Firebase credentials decoded from base64');
-  }
-  // PRIORITY 3: Use file path (if specified)
-  else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-    console.log('🔑 Loading Firebase credentials from file path...');
+    console.log('âœ… Firebase credentials decoded from base64');
+  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
+    // Alternative: Read from file path
+    console.log('ðŸ”‘ Loading Firebase credentials from file path...');
     serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
-  }
-  // PRIORITY 4: Local development fallback
-  else {
-    console.log('🔑 Loading Firebase credentials from local file...');
+  } else {
+    // Local development: Read from local file
+    console.log('ðŸ”‘ Loading Firebase credentials from local file...');
     serviceAccount = require('./firebase-service-account.json');
   }
 
@@ -374,12 +344,12 @@ try {
     });
   }
   
-  console.log('✅ Firebase Admin initialized successfully');
-  console.log('✅ Project ID:', serviceAccount.project_id);
+  console.log('âœ… Firebase Admin initialized successfully');
+  console.log('âœ… Project ID:', serviceAccount.project_id);
   
 } catch (error) {
-  console.error('❌ Firebase Admin initialization failed:', error.message);
-  console.log('🔓 Running in NO-AUTH mode for testing');
+  console.error('âŒ Firebase Admin initialization failed:', error.message);
+  console.log('ðŸ”“ Running in NO-AUTH mode for testing');
 }
 const verifyToken = async (req, res, next) => {
   try {
@@ -401,7 +371,7 @@ const verifyToken = async (req, res, next) => {
     };
     next();
   } catch (error) {
-    console.error('❌ Token verification failed:', error.message);
+    console.error('âŒ Token verification failed:', error.message);
     return res.status(401).json({ success: false, error: 'Unauthorized: Invalid token' });
   }
 };
@@ -435,9 +405,9 @@ function validateData(csvData) {
   const rowCount = csvData.data.length;
   
   if (rowCount < 3) {
-    warnings.push('⚠️ Very limited data. Analysis confidence: LOW');
+    warnings.push('âš ï¸ Very limited data. Analysis confidence: LOW');
   } else if (rowCount < 10) {
-    warnings.push('⚠️ Small dataset. Consider adding more data');
+    warnings.push('âš ï¸ Small dataset. Consider adding more data');
   }
   
   // Detect revenue/amount column
@@ -451,7 +421,7 @@ function validateData(csvData) {
   if (revenueColIndex !== -1) {
     const hasNegative = csvData.data.some(row => row[revenueColIndex] < 0);
     if (hasNegative) {
-      warnings.push('❌ Negative values detected. Please verify data');
+      warnings.push('âŒ Negative values detected. Please verify data');
     }
     
     totalRevenue = csvData.data.reduce((sum, row) => {
@@ -475,20 +445,20 @@ function validateData(csvData) {
 // GROQ API HELPER WITH DETAILED LOGGING
 // ============================================
 async function callGroqAPI(messages) {
-  // ✅ SECURE: Conditional logging only in development
+  // âœ… SECURE: Conditional logging only in development
   if (process.env.NODE_ENV === 'development') {
-    console.log('🤖 [GROQ] Starting API call...');
-    console.log('🤖 [GROQ] API Key present:', !!GROQ_API_KEY);
+    console.log('ðŸ¤– [GROQ] Starting API call...');
+    console.log('ðŸ¤– [GROQ] API Key present:', !!GROQ_API_KEY);
   }
   
   if (!GROQ_API_KEY) {
-    console.error('❌ [GROQ] API Key is missing!');
+    console.error('âŒ [GROQ] API Key is missing!');
     throw new Error('GROQ_API_KEY is not configured');
   }
 
   if (!GROQ_API_KEY.startsWith('gsk_')) {
-    console.error('❌ [GROQ] Invalid API Key format!');
-    // ✅ SECURE: No key details in production
+    console.error('âŒ [GROQ] Invalid API Key format!');
+    // âœ… SECURE: No key details in production
     if (process.env.NODE_ENV === 'development') {
       console.error('   Expected: gsk_...');
       console.error('   Got:', GROQ_API_KEY.substring(0, 10) + '...');
@@ -502,7 +472,7 @@ async function callGroqAPI(messages) {
     max_tokens: 4000
   };
 
-  console.log('🤖 [GROQ] Request payload:', JSON.stringify({
+  console.log('ðŸ¤– [GROQ] Request payload:', JSON.stringify({
     model: requestPayload.model,
     messageCount: messages.length,
     temperature: requestPayload.temperature,
@@ -510,7 +480,7 @@ async function callGroqAPI(messages) {
   }));
 
   try {
-    console.log('🤖 [GROQ] Sending request to:', GROQ_API_URL);
+    console.log('ðŸ¤– [GROQ] Sending request to:', GROQ_API_URL);
     
     const response = await axios.post(GROQ_API_URL, requestPayload, {
       headers: {
@@ -520,30 +490,30 @@ async function callGroqAPI(messages) {
       timeout: 30000
     });
     
-    console.log('✅ [GROQ] API call successful!');
-    console.log('✅ [GROQ] Response status:', response.status);
-    console.log('✅ [GROQ] Response length:', response.data.choices[0].message.content.length);
+    console.log('âœ… [GROQ] API call successful!');
+    console.log('âœ… [GROQ] Response status:', response.status);
+    console.log('âœ… [GROQ] Response length:', response.data.choices[0].message.content.length);
     
     return response.data.choices[0].message.content;
     
   } catch (error) {
-    console.error('❌ [GROQ] API call failed!');
+    console.error('âŒ [GROQ] API call failed!');
     
     if (error.response) {
-      console.error('❌ [GROQ] Status:', error.response.status);
-      console.error('❌ [GROQ] Error data:', JSON.stringify(error.response.data, null, 2));
-      console.error('❌ [GROQ] Headers:', JSON.stringify(error.response.headers, null, 2));
+      console.error('âŒ [GROQ] Status:', error.response.status);
+      console.error('âŒ [GROQ] Error data:', JSON.stringify(error.response.data, null, 2));
+      console.error('âŒ [GROQ] Headers:', JSON.stringify(error.response.headers, null, 2));
       
       const errorMessage = error.response.data?.error?.message || 'Unknown error';
       throw new Error(`GROQ API Error (${error.response.status}): ${errorMessage}`);
       
     } else if (error.request) {
-      console.error('❌ [GROQ] Network error - no response received');
+      console.error('âŒ [GROQ] Network error - no response received');
       throw new Error('Network error connecting to GROQ API');
       
     } else {
-      console.error('❌ [GROQ] Unexpected error:', error.message);
-      console.error('❌ [GROQ] Stack trace:', error.stack);
+      console.error('âŒ [GROQ] Unexpected error:', error.message);
+      console.error('âŒ [GROQ] Stack trace:', error.stack);
       throw error;
     }
   }
@@ -632,7 +602,7 @@ const calculateComprehensiveStats = (csvData) => {
     const revenueStats = stats.columns[headers[revenueCol]];
     stats.overview.totalRevenue = revenueStats.sum;
     stats.overview.avgRevenue = revenueStats.mean;
-    stats.overview.revenueRange = `₹${revenueStats.min.toLocaleString()} - ₹${revenueStats.max.toLocaleString()}`;
+    stats.overview.revenueRange = `â‚¹${revenueStats.min.toLocaleString()} - â‚¹${revenueStats.max.toLocaleString()}`;
   }
 
   // Detect quantity columns
@@ -814,22 +784,22 @@ const createDistribution = (values, bucketCount = 5) => {
 // ============================================
 const convertToIndianFormat = (text) => {
   // Convert large numbers to lakhs/crores for better speech
-  return text.replace(/₹[\d,]+/g, (match) => {
-    const number = parseFloat(match.replace(/[₹,]/g, ''));
+  return text.replace(/â‚¹[\d,]+/g, (match) => {
+    const number = parseFloat(match.replace(/[â‚¹,]/g, ''));
     
     if (isNaN(number)) return match;
     
     if (number >= 10000000) {
       // Crores
       const crores = number / 10000000;
-      // ✅ FIXED: Remove "rupees" when using lakhs/crores
+      // âœ… FIXED: Remove "rupees" when using lakhs/crores
       return crores % 1 === 0 
         ? `${crores} crore` 
         : `${crores.toFixed(2)} crore`;
     } else if (number >= 100000) {
       // Lakhs
       const lakhs = number / 100000;
-      // ✅ FIXED: Remove "rupees" when using lakhs/crores
+      // âœ… FIXED: Remove "rupees" when using lakhs/crores
       return lakhs % 1 === 0 
         ? `${lakhs} lakh` 
         : `${lakhs.toFixed(2)} lakh`;
@@ -952,7 +922,7 @@ const upload = multer({
 });
 
 // File upload endpoint
-// ✅ SECURE: Protected file upload with validation
+// âœ… SECURE: Protected file upload with validation
 app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), async (req, res) => {
   let filePath = null;
   
@@ -964,10 +934,10 @@ app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), 
     const file = req.file;
     filePath = file.path;
 
-    console.log(`📁 Processing file: ${file.originalname} (${(file.size / 1024).toFixed(2)} KB)`);
-    console.log(`👤 User: ${req.user.email}`);
+    console.log(`ðŸ“ Processing file: ${file.originalname} (${(file.size / 1024).toFixed(2)} KB)`);
+    console.log(`ðŸ‘¤ User: ${req.user.email}`);
 
-    // ✅ SECURITY: Validate file extension
+    // âœ… SECURITY: Validate file extension
     const allowedExtensions = ['csv', 'xlsx', 'xls', 'pdf', 'docx', 'doc'];
     const fileExtension = file.originalname.split('.').pop().toLowerCase();
     
@@ -979,7 +949,7 @@ app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), 
       });
     }
 
-    // ✅ IMPROVED: More lenient MIME validation for PDFs
+    // âœ… SECURITY: Validate MIME type (prevent extension spoofing)
     const allowedMimeTypes = [
       'text/csv', 
       'text/plain',
@@ -990,24 +960,16 @@ app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), 
       'application/msword'
     ];
     
-    // ✅ NEW: Skip MIME validation for PDFs if file-type library fails
-    // PDFs are harder to detect correctly, so we trust the extension
-    const skipMimeCheck = fileExtension === 'pdf';
-    
-    if (!skipMimeCheck) {
-      const isValidType = await validateFileType(filePath, allowedMimeTypes);
-      if (!isValidType && fileExtension !== 'csv') {
-        fs.unlinkSync(filePath);
-        return res.status(400).json({ 
-          success: false, 
-          error: 'File content does not match its extension. Potential security risk detected.' 
-        });
-      }
-    } else {
-      console.log('ℹ️ Skipping MIME check for PDF - trusting extension');
+    const isValidType = await validateFileType(filePath, allowedMimeTypes);
+    if (!isValidType && fileExtension !== 'csv') {
+      fs.unlinkSync(filePath);
+      return res.status(400).json({ 
+        success: false, 
+        error: 'File content does not match its extension. Potential security risk detected.' 
+      });
     }
 
-    // ✅ SECURITY: Validate file size (already limited by multer, but double-check)
+    // âœ… SECURITY: Validate file size (already limited by multer, but double-check)
     const maxSize = 50 * 1024 * 1024; // 50MB
     if (file.size > maxSize) {
       fs.unlinkSync(filePath);
@@ -1023,14 +985,14 @@ app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), 
     if (fileExtension === 'csv') {
       const rawData = fs.readFileSync(file.path, 'utf-8');
       
-      // ✅ SECURITY: Sanitize CSV content to prevent formula injection
+      // âœ… SECURITY: Sanitize CSV content to prevent formula injection
       extractedData = sanitizeCSV(rawData);
       
       const lineCount = extractedData.split('\n').length;
-      console.log(`📊 CSV has ${lineCount} lines`);
+      console.log(`ðŸ“Š CSV has ${lineCount} lines`);
       
       if (lineCount > 10000) {
-        console.warn(`⚠️ Very large CSV (${lineCount} lines) - may take longer to process`);
+        console.warn(`âš ï¸ Very large CSV (${lineCount} lines) - may take longer to process`);
       }
     }
     
@@ -1041,43 +1003,29 @@ app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), 
       const sheet = workbook.Sheets[sheetName];
       const rawCSV = XLSX.utils.sheet_to_csv(sheet);
       
-      // ✅ SECURITY: Sanitize Excel-generated CSV
+      // âœ… SECURITY: Sanitize Excel-generated CSV
       extractedData = sanitizeCSV(rawCSV);
       
       const lineCount = extractedData.split('\n').length;
-      console.log(`📊 Excel converted to CSV with ${lineCount} lines`);
+      console.log(`ðŸ“Š Excel converted to CSV with ${lineCount} lines`);
     }
     
-    // ✅ FIXED: Process PDF files with better error handling
+    // Process PDF files
     else if (fileExtension === 'pdf') {
-      try {
-        const dataBuffer = fs.readFileSync(file.path);
-        const pdfData = await pdfExtract.extractBuffer(dataBuffer);
-        
-        // Extract text from all pages
-        extractedData = pdfData.pages
-          .map(page => page.content.map(item => item.str).join(' '))
-          .join('\n');
-        
-        console.log(`📄 PDF extracted: ${pdfData.pages.length} pages`);
-      } catch (pdfError) {
-        console.error('❌ PDF extraction failed:', pdfError);
-        fs.unlinkSync(filePath);
-        return res.status(400).json({ 
-          success: false, 
-          error: 'Failed to extract text from PDF. File may be corrupted or password-protected.' 
-        });
-      }
+      const dataBuffer = fs.readFileSync(file.path);
+      const pdfData = await pdf(dataBuffer);
+      extractedData = pdfData.text;
+      console.log(`ðŸ“„ PDF extracted: ${pdfData.numpages} pages`);
     }
     
     // Process Word files
     else if (fileExtension === 'docx' || fileExtension === 'doc') {
       const result = await mammoth.extractRawText({ path: file.path });
       extractedData = result.value;
-      console.log(`📝 Word document extracted`);
+      console.log(`ðŸ“ Word document extracted`);
     }
 
-    // ✅ SECURITY: Validate extracted data
+    // âœ… SECURITY: Validate extracted data
     if (!extractedData || extractedData.trim().length === 0) {
       return res.status(400).json({ 
         success: false, 
@@ -1085,15 +1033,15 @@ app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), 
       });
     }
 
-    // ✅ SECURITY: Limit extracted data size
+    // âœ… SECURITY: Limit extracted data size
     const maxExtractedSize = 10 * 1024 * 1024; // 10MB text
     if (extractedData.length > maxExtractedSize) {
       extractedData = extractedData.substring(0, maxExtractedSize);
-      console.warn('⚠️ Data truncated to 10MB');
+      console.warn('âš ï¸ Data truncated to 10MB');
     }
 
     const dataSizeKB = Buffer.byteLength(extractedData, 'utf8') / 1024;
-    console.log(`📦 Extracted data size: ${dataSizeKB.toFixed(2)} KB`);
+    console.log(`ðŸ“¦ Extracted data size: ${dataSizeKB.toFixed(2)} KB`);
 
     res.json({
       success: true,
@@ -1105,16 +1053,16 @@ app.post('/api/upload-file', verifyToken, uploadLimiter, upload.single('file'), 
     });
 
   } catch (error) {
-    console.error('❌ File processing error:', error.message);
+    console.error('âŒ File processing error:', error.message);
     handleError(res, error, 'Failed to process file. Please ensure the file is not corrupted.');
   } finally {
-    // ✅ SECURITY: Always cleanup uploaded file
+    // âœ… SECURITY: Always cleanup uploaded file
     if (filePath && fs.existsSync(filePath)) {
       try {
         fs.unlinkSync(filePath);
-        console.log('🗑️ Cleaned up file:', filePath);
+        console.log('ðŸ—‘ï¸ Cleaned up file:', filePath);
       } catch (cleanupError) {
-        console.error('⚠️ File cleanup failed:', cleanupError.message);
+        console.error('âš ï¸ File cleanup failed:', cleanupError.message);
       }
     }
   }
@@ -1160,7 +1108,7 @@ app.post('/api/auth/login', verifyToken, async (req, res) => {
         displayName: name,
         photoURL: picture
       });
-      console.log('✅ New user created:', email);
+      console.log('âœ… New user created:', email);
     } else {
       user.lastLogin = new Date();
       await user.save();
@@ -1172,16 +1120,16 @@ app.post('/api/auth/login', verifyToken, async (req, res) => {
 });
 
 app.post('/api/parse-data', verifyToken, async (req, res) => {
-  console.log('📥 [PARSE] ==================== NEW PARSE REQUEST ====================');
+  console.log('ðŸ“¥ [PARSE] ==================== NEW PARSE REQUEST ====================');
   
   try {
     const { rawData } = req.body;
     
-    console.log('📥 [PARSE] User:', req.user.email);
-    console.log('📥 [PARSE] Raw data length:', rawData?.length || 0);
+    console.log('ðŸ“¥ [PARSE] User:', req.user.email);
+    console.log('ðŸ“¥ [PARSE] Raw data length:', rawData?.length || 0);
     
     if (!rawData?.trim()) {
-      console.error('❌ [PARSE] No data provided');
+      console.error('âŒ [PARSE] No data provided');
       return res.status(400).json({ success: false, error: 'No data provided' });
     }
 
@@ -1191,7 +1139,7 @@ app.post('/api/parse-data', verifyToken, async (req, res) => {
       .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
       .slice(0, 5000000); // 5MB text limit
 
-    console.log('📊 Parsing data for user:', req.user.email);
+    console.log('ðŸ“Š Parsing data for user:', req.user.email);
     
     const lines = sanitizedData.trim().split('\n');
     const firstLine = lines[0];
@@ -1204,10 +1152,10 @@ app.post('/api/parse-data', verifyToken, async (req, res) => {
     let processingMethod = '';
     
     // ============================================
-    // TIER 1: SMALL FILES (≤50 rows) - AI Enhanced
+    // TIER 1: SMALL FILES (â‰¤50 rows) - AI Enhanced
     // ============================================
     if (isAlreadyCSV && rowCount <= 50) {
-      console.log('🤖 Small CSV detected (', rowCount, 'rows) - using AI for cleanup');
+      console.log('ðŸ¤– Small CSV detected (', rowCount, 'rows) - using AI for cleanup');
       processingMethod = 'ai_enhanced';
       
       const prompt = `Clean and standardize this CSV. Return ONLY the CSV, no explanations.
@@ -1232,7 +1180,7 @@ CSV:`;
     // TIER 2: MEDIUM FILES (51-1000 rows) - Direct Parse
     // ============================================
     else if (isAlreadyCSV && rowCount > 50 && rowCount <= 1000) {
-      console.log('✅ Medium CSV detected (', rowCount, 'rows) - parsing directly');
+      console.log('âœ… Medium CSV detected (', rowCount, 'rows) - parsing directly');
       processingMethod = 'direct_parse';
       csvText = sanitizedData.trim();
       
@@ -1241,7 +1189,7 @@ CSV:`;
     // TIER 3: LARGE FILES (1000+ rows) - Smart Sampling
     // ============================================
     else if (isAlreadyCSV && rowCount > 1000) {
-      console.log('📦 Large CSV detected (', rowCount, 'rows) - using smart sampling');
+      console.log('ðŸ“¦ Large CSV detected (', rowCount, 'rows) - using smart sampling');
       processingMethod = 'smart_sampling';
       
       // Process the full dataset directly (no AI needed for valid CSV)
@@ -1252,7 +1200,7 @@ CSV:`;
     // TIER 4: UNSTRUCTURED DATA - AI Conversion
     // ============================================
     else {
-      console.log('🤖 Unstructured data detected - using AI to convert');
+      console.log('ðŸ¤– Unstructured data detected - using AI to convert');
       processingMethod = 'ai_conversion';
       
       // For large unstructured data, send only first 200 lines
@@ -1279,7 +1227,7 @@ CSV:`;
         ]);
       } catch (apiError) {
         if (apiError.response?.status === 413) {
-          console.error('⚠️ Payload too large for AI - falling back to direct parse');
+          console.error('âš ï¸ Payload too large for AI - falling back to direct parse');
           csvText = sanitizedData.trim();
           processingMethod = 'fallback_direct';
         } else {
@@ -1316,7 +1264,7 @@ CSV:`;
       try {
         const row = csvLines[i].split(',').map(cell => {
           const cleaned = cell.trim().replace(/"/g, '');
-          const num = parseFloat(cleaned.replace(/[$,₹]/g, ''));
+          const num = parseFloat(cleaned.replace(/[$,â‚¹]/g, ''));
           return isNaN(num) ? cleaned : num;
         });
         
@@ -1328,7 +1276,7 @@ CSV:`;
         }
       } catch (rowError) {
         skippedRows++;
-        console.warn(`⚠️ Skipped malformed row ${i}`);
+        console.warn(`âš ï¸ Skipped malformed row ${i}`);
       }
     }
 
@@ -1339,15 +1287,15 @@ CSV:`;
       });
     }
 
-    console.log(`✅ Parsed ${data.length} valid rows (skipped ${skippedRows} malformed rows)`);
+    console.log(`âœ… Parsed ${data.length} valid rows (skipped ${skippedRows} malformed rows)`);
 
     const csvData = { headers, data };
     const validation = validateData(csvData);
     
-    console.log('🏭 DETECTED INDUSTRY:', validation.industryType);
-    console.log('📊 Data Quality:', validation.confidence);
-    console.log('📈 Total Revenue:', validation.totalRevenue);
-    console.log('🔧 Processing Method:', processingMethod);
+    console.log('ðŸ­ DETECTED INDUSTRY:', validation.industryType);
+    console.log('ðŸ“Š Data Quality:', validation.confidence);
+    console.log('ðŸ“ˆ Total Revenue:', validation.totalRevenue);
+    console.log('ðŸ”§ Processing Method:', processingMethod);
     
     // Save to database with size-aware storage
     const shouldStoreFullData = data.length <= 1000;
@@ -1372,7 +1320,7 @@ CSV:`;
       }
     });
 
-    console.log(`✅ Dataset saved with ID: ${dataset._id}`);
+    console.log(`âœ… Dataset saved with ID: ${dataset._id}`);
     
     res.json({ 
       success: true, 
@@ -1390,7 +1338,7 @@ CSV:`;
     });
     
   } catch (error) {
-    console.error('❌ Parse error:', error);
+    console.error('âŒ Parse error:', error);
     
     let errorMessage = 'Failed to parse data. ';
     
@@ -1407,34 +1355,50 @@ CSV:`;
 });
 
 app.post('/api/analyze', verifyToken, async (req, res) => {
-  console.log('📊 [ANALYZE] ==================== NEW ANALYSIS REQUEST ====================');
+  console.log('ðŸ“Š [ANALYZE] ==================== NEW ANALYSIS REQUEST ====================');
   
   try {
     const { question, csvData, datasetId } = req.body;
     
-    console.log('📊 [ANALYZE] User:', req.user.email);  
-    console.log('📊 [ANALYZE] Question:', question?.substring(0, 100) + '...');
-    console.log('📊 [ANALYZE] CSV Data present:', !!csvData);
-    console.log('📊 [ANALYZE] Dataset ID:', datasetId || 'none');
+    console.log('ðŸ“Š [ANALYZE] User:', req.user.email);  
+    console.log('ðŸ“Š [ANALYZE] Question:', question?.substring(0, 100) + '...');
+    console.log('ðŸ“Š [ANALYZE] CSV Data present:', !!csvData);
+    console.log('ðŸ“Š [ANALYZE] Dataset ID:', datasetId || 'none');
     
     if (!question || !csvData) {
-      console.error('❌ [ANALYZE] Missing required data');
+      console.error('âŒ [ANALYZE] Missing required data');
       return res.status(400).json({ success: false, error: 'Missing data' });
     }
 
-    console.log('🤖 Analyzing for:', req.user.email);
+    console.log('ðŸ¤– Analyzing for:', req.user.email);
     
     const validation = validateData(csvData);
-    const industryType = validation.industryType;
     const rowCount = csvData.data.length;
 
     // ============================================
-// PERFORM STATISTICAL ANALYSIS  ← NEW CODE STARTS HERE
-// ============================================
-console.log('🔬 Running statistical analysis...');
+    // PERFORM STATISTICAL ANALYSIS
+    // ============================================
+    console.log('ðŸ”¬ Running statistical analysis...');
+
+    // ============================================
+    // Calculate Schema-Aware Industry Metrics
+    // ============================================
+    const availableColumns = detectAvailableMetrics(csvData.headers);
+    const industryType = detectIndustryType(availableColumns);  // â† Only ONE declaration!
+    const schemaMetrics = generateIndustryMetrics(csvData, industryType, availableColumns);
+
+    console.log('ðŸŽ¯ Detected Industry:', industryType);
+    console.log('ðŸ“Š Schema-Aware Metrics:', schemaMetrics);
+
+console.log('ðŸŽ¯ Detected Industry:', industryType);
+console.log('ðŸ“Š Schema-Aware Metrics:', schemaMetrics);
+
+// NEW: Generate SQL Documentation
+const sqlQueries = generateSQLDocumentation(csvData, schemaMetrics, availableColumns);
+const formattedSQL = formatSQLForDisplay(sqlQueries);
+console.log('ðŸ—„ï¸ SQL Queries Generated:', sqlQueries.length);
 
 let statisticalResults = null;
-let fintechMetrics = null;
 
 // Detect numeric columns for analysis
 const numericColumns = csvData.headers.map((header, index) => {
@@ -1448,14 +1412,17 @@ if (numericColumns.length > 0) {
   
   statisticalResults = {
     columnName: primaryColumn.header,
-    anomalyDetection: statisticalAnalysis.detectAnomalies(primaryColumn.values),
+    anomalyDetection: {
+      ...statisticalAnalysis.detectAnomalies(primaryColumn.values),
+      percentage: ((statisticalAnalysis.detectAnomalies(primaryColumn.values).totalAnomalies / primaryColumn.values.length) * 100).toFixed(2)
+    },
     trendAnalysis: statisticalAnalysis.detectTrend(primaryColumn.values),
     confidenceInterval: statisticalAnalysis.calculateConfidenceInterval(primaryColumn.values),
     growthTest: statisticalAnalysis.testGrowthSignificance(primaryColumn.values),
     diagnostics: statisticalAnalysis.performDiagnostics(primaryColumn.values)
   };
   
-  console.log('✅ Statistical analysis complete:', {
+  console.log('âœ… Statistical analysis complete:', {
     anomalies: statisticalResults.anomalyDetection?.totalAnomalies || 0,
     trend: statisticalResults.trendAnalysis?.trendDirection,
     rSquared: statisticalResults.trendAnalysis?.rSquared
@@ -1467,7 +1434,7 @@ if (numericColumns.length > 0) {
     let dataContext = '';
     
     if (rowCount > 100) {
-      console.log(`📊 Large dataset (${rowCount} rows) - using statistical aggregation + sampling`);
+      console.log(`ðŸ“Š Large dataset (${rowCount} rows) - using statistical aggregation + sampling`);
       
       // STAGE 1: Calculate comprehensive statistics (NO data loss)
       const comprehensiveStats = calculateComprehensiveStats(csvData);
@@ -1476,20 +1443,20 @@ if (numericColumns.length > 0) {
       const samples = extractRepresentativeSamples(csvData, 60);
       
       dataContext = `
-📊 COMPREHENSIVE DATASET ANALYSIS
+ðŸ“Š COMPREHENSIVE DATASET ANALYSIS
 Total Rows Analyzed: ${rowCount.toLocaleString()}
 Industry Type: ${industryType}
 Data Quality: ${comprehensiveStats.overview.dataQuality}
 
-═══════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 STAGE 1: COMPLETE STATISTICAL OVERVIEW
-═══════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 ${JSON.stringify(comprehensiveStats, null, 2)}
 
-═══════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 STAGE 2: REPRESENTATIVE SAMPLES (${samples.data.length} examples)
-═══════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 Headers: ${samples.headers.join(' | ')}
 Sample Data (showing diverse examples):
@@ -1499,13 +1466,13 @@ NOTE: You have access to COMPLETE statistics from all ${rowCount} rows above, pl
 
     } else {
       // Small dataset - send full data
-      console.log(`📊 Small dataset (${rowCount} rows) - sending complete data`);
+      console.log(`ðŸ“Š Small dataset (${rowCount} rows) - sending complete data`);
       
       dataContext = `
 Headers: ${csvData.headers.join(', ')}
 Rows: ${csvData.data.length}
 Industry Type: ${industryType}
-Total Revenue: ₹${validation.totalRevenue.toFixed(2)}
+Total Revenue: â‚¹${validation.totalRevenue.toFixed(2)}
 Data Quality: ${validation.confidence}
 
 DATA PREVIEW:
@@ -1524,27 +1491,27 @@ BUSINESS QUESTION:
 "${question}"
 
 ${validation.warnings.length > 0 ? 
-'⚠️ DATA QUALITY WARNINGS: ' + validation.warnings.join(' | ') : ''}
+'âš ï¸ DATA QUALITY WARNINGS: ' + validation.warnings.join(' | ') : ''}
 
 ${statisticalResults ? `
-📊 STATISTICAL FINDINGS AVAILABLE:
+ðŸ“Š STATISTICAL FINDINGS AVAILABLE:
 ${statisticalResults.trendAnalysis && parseFloat(statisticalResults.trendAnalysis.rSquared) > 0.3 ? 
-  `- Trend Strength: R² = ${statisticalResults.trendAnalysis.rSquared} (${parseFloat(statisticalResults.trendAnalysis.rSquared) > 0.7 ? 'Strong' : 'Moderate'} correlation)` 
+  `- Trend Strength: RÂ² = ${statisticalResults.trendAnalysis.rSquared} (${parseFloat(statisticalResults.trendAnalysis.rSquared) > 0.7 ? 'Strong' : 'Moderate'} correlation)` 
   : '- Trend: Observable pattern but not statistically strong'}
 ${statisticalResults.growthTest && statisticalResults.growthTest.pValue ? 
   `- Growth Significance: p-value ${statisticalResults.growthTest.pValue} (${statisticalResults.growthTest.isSignificant ? 'Statistically significant' : 'Not significant'})` 
   : ''}
 - Anomalies Detected: ${statisticalResults.anomalyDetection?.totalAnomalies || 0} outliers (${statisticalResults.anomalyDetection?.percentage || 0}% of data)
 ${statisticalResults.confidenceInterval ? 
-  `- 95% Confidence Interval: ₹${parseFloat(statisticalResults.confidenceInterval.lower).toLocaleString()} - ₹${parseFloat(statisticalResults.confidenceInterval.upper).toLocaleString()}` 
+  `- 95% Confidence Interval: â‚¹${parseFloat(statisticalResults.confidenceInterval.lower).toLocaleString()} - â‚¹${parseFloat(statisticalResults.confidenceInterval.upper).toLocaleString()}` 
   : ''}
 ` : ''}
 
-═══════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 REPORT STRUCTURE - Follow this EXACT format:
-═══════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-📊 EXECUTIVE SUMMARY
+ðŸ“Š EXECUTIVE SUMMARY
 
 Write 2-3 professional sentences summarizing:
 - Overall business performance with key revenue/growth numbers
@@ -1554,13 +1521,13 @@ Write 2-3 professional sentences summarizing:
 Use concrete metrics in Indian Rupee format (lakhs/crores).
 
 
-🔍 DETAILED ANALYSIS
+ðŸ” DETAILED ANALYSIS
 
 1. Revenue & Financial Performance
 
 Provide a clear paragraph discussing:
-- Total revenue: ₹X (specify in lakhs/crores)
-- Average per transaction/period/unit: ₹X
+- Total revenue: â‚¹X (specify in lakhs/crores)
+- Average per transaction/period/unit: â‚¹X
 - Highest performing segment/period (with specific numbers)
 - Lowest performing area (with specific numbers)
 - Revenue distribution patterns across categories
@@ -1571,7 +1538,7 @@ Write a structured paragraph covering:
 - Overall growth rate: X%
 - Trend direction and consistency
 ${statisticalResults && parseFloat(statisticalResults.trendAnalysis?.rSquared || 0) > 0.3 ? 
-  `- Statistical validation: Reference R² value to show trend reliability` 
+  `- Statistical validation: Reference RÂ² value to show trend reliability` 
   : '- Growth pattern based on period-over-period comparison'}
 - Notable acceleration or deceleration periods
 - Month-over-month or period-over-period changes
@@ -1604,7 +1571,7 @@ ${industryType === 'fintech' ?
   'Analyze key performance indicators relevant to your business model with actual data points'}
 
 
-🎯 STRATEGIC RECOMMENDATIONS
+ðŸŽ¯ STRATEGIC RECOMMENDATIONS
 
 Priority 1: [Most Critical Action]
 - What to do: [Specific, actionable step]
@@ -1615,7 +1582,7 @@ Priority 1: [Most Critical Action]
 Priority 2: [Important Secondary Action]
 - What to do: [Specific recommendation]
 - Business rationale: [Evidence from analysis]
-- Expected impact: [Measurable outcome with ₹ or % estimate]
+- Expected impact: [Measurable outcome with â‚¹ or % estimate]
 - Implementation timeline: [When to execute]
 
 Priority 3: [Strategic Long-term Action]
@@ -1625,7 +1592,7 @@ Priority 3: [Strategic Long-term Action]
 - Implementation timeline: [Planning horizon]
 
 
-⚠️ RISKS & CONSIDERATIONS
+âš ï¸ RISKS & CONSIDERATIONS
 
 List 2-3 key risks or challenges:
 - Business execution risks based on current data patterns
@@ -1635,7 +1602,7 @@ List 2-3 key risks or challenges:
     : 'Data quality is good'}
 
 
-📋 ASSUMPTIONS & LIMITATIONS
+ðŸ“‹ ASSUMPTIONS & LIMITATIONS
 
 Clearly state:
 - Data scope: ${validation.rowCount} records analyzed (${validation.rowCount >= 1000 ? 'Statistically robust sample' : 'Limited sample size - interpret with caution'})
@@ -1647,21 +1614,21 @@ Clearly state:
   'Limited (directional insights only)'}
 
 
-💡 ACTIONABLE NEXT STEPS
+ðŸ’¡ ACTIONABLE NEXT STEPS
 
 1. Immediate (This Week): [Urgent action item]
 2. Short-term (This Month): [Important follow-up]
 3. Strategic (This Quarter): [Long-term initiative]
 
 
-📈 FORECASTING & PROJECTIONS
+ðŸ“ˆ FORECASTING & PROJECTIONS
 
 ${statisticalResults && parseFloat(statisticalResults.trendAnalysis?.rSquared || 0) > 0.5 ? 
-  `Based on statistically significant trend analysis (R² = ${statisticalResults.trendAnalysis.rSquared}):
+  `Based on statistically significant trend analysis (RÂ² = ${statisticalResults.trendAnalysis.rSquared}):
 
 FORECAST:
 - Projected next period performance: [Provide estimate]
-- 95% Confidence Range: ₹${parseFloat(statisticalResults.confidenceInterval?.lower || 0).toLocaleString()} - ₹${parseFloat(statisticalResults.confidenceInterval?.upper || 0).toLocaleString()}
+- 95% Confidence Range: â‚¹${parseFloat(statisticalResults.confidenceInterval?.lower || 0).toLocaleString()} - â‚¹${parseFloat(statisticalResults.confidenceInterval?.upper || 0).toLocaleString()}
 - Forecast confidence: High (supported by strong historical correlation)
 
 FORECAST ASSUMPTIONS:
@@ -1670,11 +1637,11 @@ FORECAST ASSUMPTIONS:
 - No significant competitive or regulatory changes
 - Historical patterns continue to apply
 
-⚠️ USE WITH CAUTION: Forecasts are probabilistic estimates, not guarantees. Monitor actual performance and adjust strategy accordingly.`
+âš ï¸ USE WITH CAUTION: Forecasts are probabilistic estimates, not guarantees. Monitor actual performance and adjust strategy accordingly.`
   :
-  `⚠️ FORECASTING NOT RECOMMENDED
+  `âš ï¸ FORECASTING NOT RECOMMENDED
 
-Current data shows ${statisticalResults?.trendAnalysis?.trendDirection || 'variable'} patterns but lacks statistical confidence for reliable forecasting${statisticalResults?.trendAnalysis?.rSquared ? ` (R² = ${statisticalResults.trendAnalysis.rSquared})` : ''}.
+Current data shows ${statisticalResults?.trendAnalysis?.trendDirection || 'variable'} patterns but lacks statistical confidence for reliable forecasting${statisticalResults?.trendAnalysis?.rSquared ? ` (RÂ² = ${statisticalResults.trendAnalysis.rSquared})` : ''}.
 
 DIRECTIONAL GUIDANCE:
 - Recent trend suggests ${statisticalResults?.trendAnalysis?.trendDirection || 'mixed'} movement
@@ -1684,45 +1651,45 @@ DIRECTIONAL GUIDANCE:
 Focus on near-term actions rather than long-range predictions.`}
 
 
-═══════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 WRITING GUIDELINES (CRITICAL):
-═══════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-✅ TONE & STYLE:
+âœ… TONE & STYLE:
 - Write for C-suite executives (CEO, CFO, COO level)
 - Professional, confident, decision-oriented language
 - Avoid unnecessary technical jargon
 - Use emojis ONLY for section headers, not within analysis text
 - Balance data rigor with business accessibility
 
-✅ NUMERICAL PRECISION:
-- Always use Indian Rupee format (₹ lakhs/crores)
+âœ… NUMERICAL PRECISION:
+- Always use Indian Rupee format (â‚¹ lakhs/crores)
 - Include percentages with one decimal place (X.X%)
-- Round large numbers appropriately (₹45.6 lakhs, not ₹4,563,247)
+- Round large numbers appropriately (â‚¹45.6 lakhs, not â‚¹4,563,247)
 - Compare numbers to averages, benchmarks, or prior periods for context
 
-✅ STRUCTURE:
+âœ… STRUCTURE:
 - Executive Summary: Flowing prose (2-3 sentences, no bullets)
 - Analysis sections: Clear paragraphs with embedded data points
 - Recommendations: Structured bullet format (What/Why/Impact/Timeline)
 - Avoid bullet points except in Recommendations, Risks, and Next Steps
 
-✅ DATA INTEGRITY:
+âœ… DATA INTEGRITY:
 - Only cite statistical measures when they exist and are meaningful
 - Never fabricate numbers - use "not available" if data is missing
 - Acknowledge data limitations transparently
 - Provide confidence levels for predictions
 
-✅ BUSINESS IMPACT:
+âœ… BUSINESS IMPACT:
 - Every insight must connect to business value (revenue, cost, risk, growth)
 - Recommendations must be specific and implementable
 - Quantify expected outcomes wherever possible
 - Consider feasibility and resource requirements
 
 
-═══════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 CRITICAL SUCCESS FACTORS:
-═══════════════════════════════════════════════════════════════
+â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 This report will be presented to senior leadership and potentially external stakeholders (board members, investors, partners).
 
@@ -1740,7 +1707,7 @@ const answer = await callGroqAPI([
   { role: 'system', content: 'You are a senior business analyst creating comprehensive executive reports. Follow the format exactly and provide detailed, data-driven insights.' },
   { role: 'user', content: expandedPrompt }
 ]);
-// ✅ ADD THESE LINES:
+// âœ… ADD THESE LINES:
 let responseType = 'text';
 let chartData = null;
 let cleanedAnswer = answer;
@@ -1769,8 +1736,8 @@ if (datasetId) {
   });
 }
 
-console.log('✅ [ANALYZE] Analysis complete - response length:', answer.length);
-console.log('📊 [ANALYZE] ==================== REQUEST COMPLETE ====================');
+console.log('âœ… [ANALYZE] Analysis complete - response length:', answer.length);
+console.log('ðŸ“Š [ANALYZE] ==================== REQUEST COMPLETE ====================');
 
 res.json({ 
   success: true,
@@ -1780,7 +1747,10 @@ res.json({
   confidence: validation.confidence,
   industryType: industryType,
   statistics: statisticalResults,
-  fintechMetrics: fintechMetrics,
+  schemaMetrics: schemaMetrics,        // â† NEW
+  availableColumns: availableColumns,  // â† NEW
+  sqlQueries: sqlQueries,              // â† NEW
+  formattedSQL: formattedSQL,          // â† NEW
   metadata: {
     totalRevenue: validation.totalRevenue,
     rowCount: validation.rowCount,
@@ -1788,10 +1758,10 @@ res.json({
   }
 });
   } catch (error) {
-    console.error('❌ [ANALYZE] Analysis failed!');
-    console.error('❌ [ANALYZE] Error type:', error.name);
-    console.error('❌ [ANALYZE] Error message:', error.message);
-    console.error('❌ [ANALYZE] Stack trace:', error.stack);
+    console.error('âŒ [ANALYZE] Analysis failed!');
+    console.error('âŒ [ANALYZE] Error type:', error.name);
+    console.error('âŒ [ANALYZE] Error message:', error.message);
+    console.error('âŒ [ANALYZE] Stack trace:', error.stack);
     
     handleError(res, error, 'Failed to analyze data. Please try again.');
   }
@@ -1807,10 +1777,10 @@ app.post('/api/save-analysis', verifyToken, async (req, res) => {
     // MongoDB has 16MB document limit
     // ============================================
     const estimatedSize = JSON.stringify(req.body).length;
-    console.log(`💾 Saving analysis - Estimated size: ${(estimatedSize / 1024 / 1024).toFixed(2)} MB`);
+    console.log(`ðŸ’¾ Saving analysis - Estimated size: ${(estimatedSize / 1024 / 1024).toFixed(2)} MB`);
     
     if (estimatedSize > 15 * 1024 * 1024) { // 15MB safety threshold
-      console.error('❌ Document too large for MongoDB');
+      console.error('âŒ Document too large for MongoDB');
       return res.json({
         success: false,
         error: 'Dataset too large to save in history. Analysis completed successfully but not saved to history.'
@@ -1834,7 +1804,7 @@ app.post('/api/save-analysis', verifyToken, async (req, res) => {
       }
     });
     await newAnalysis.save();
-    console.log('✅ Analysis saved:', newAnalysis._id);
+    console.log('âœ… Analysis saved:', newAnalysis._id);
     res.json({
       success: true,
       message: 'Analysis saved successfully',
@@ -1847,7 +1817,7 @@ app.post('/api/save-analysis', verifyToken, async (req, res) => {
 
 app.get('/api/analysis-history', verifyToken, requireMongoDB, async (req, res) => {
   try {
-    // ✅ SECURE: Sanitize and validate inputs
+    // âœ… SECURE: Sanitize and validate inputs
     const rawLimit = req.query.limit;
     const rawDataType = req.query.dataType;
     
@@ -1864,7 +1834,7 @@ app.get('/api/analysis-history', verifyToken, requireMongoDB, async (req, res) =
       query.dataType = dataType;
     }
     
-    console.log('📊 Fetching history:', { userId: req.user.uid, limit, dataType });
+    console.log('ðŸ“Š Fetching history:', { userId: req.user.uid, limit, dataType });
     const analyses = await Analysis.find(query)
       .sort({ timestamp: -1 })
       .limit(parseInt(limit))
@@ -1877,7 +1847,7 @@ app.get('/api/analysis-history', verifyToken, requireMongoDB, async (req, res) =
 
 app.get('/api/analysis/:id', verifyToken, requireMongoDB, async (req, res) => {
   try {
-    // ✅ SECURE: Validate ObjectId format
+    // âœ… SECURE: Validate ObjectId format
     const { id } = req.params;
     
     if (!id || !/^[a-f\d]{24}$/i.test(id)) {
@@ -1906,7 +1876,7 @@ app.get('/api/analysis/:id', verifyToken, requireMongoDB, async (req, res) => {
 
 app.post('/api/compare-analysis', verifyToken, requireMongoDB, async (req, res) => {
   try {
-    // ✅ SECURE: Validate request body
+    // âœ… SECURE: Validate request body
     const { currentMetrics, dataType, currentIndustry } = req.body;
     
     if (!currentMetrics || typeof currentMetrics !== 'object') {
@@ -1920,15 +1890,15 @@ app.post('/api/compare-analysis', verifyToken, requireMongoDB, async (req, res) 
     const sanitizedIndustry = sanitizeMongoInput(currentIndustry);
     const validIndustry = validateDataType(sanitizedIndustry) || 'business';
     
-    console.log('📊 Fetching historical data for comparison...');
-    console.log('🏭 Current Industry:', validIndustry);
+    console.log('ðŸ“Š Fetching historical data for comparison...');
+    console.log('ðŸ­ Current Industry:', validIndustry);
     
     if (!currentMetrics) {
       return res.status(400).json({ success: false, error: 'Missing current metrics' });
     }
 
-    console.log('📊 Fetching historical data for comparison...');
-    console.log('🏭 Current Industry:', currentIndustry || 'unknown');
+    console.log('ðŸ“Š Fetching historical data for comparison...');
+    console.log('ðŸ­ Current Industry:', currentIndustry || 'unknown');
     
     // Get ALL past analyses
     const allPastAnalyses = await Analysis.find({ 
@@ -1939,7 +1909,7 @@ app.post('/api/compare-analysis', verifyToken, requireMongoDB, async (req, res) 
       .select('analysis.metrics industryType timestamp');
 
     if (allPastAnalyses.length === 0) {
-      console.log('ℹ️ No historical data found for comparison');
+      console.log('â„¹ï¸ No historical data found for comparison');
       return res.json({
         success: true,
         comparison: {
@@ -1950,7 +1920,7 @@ app.post('/api/compare-analysis', verifyToken, requireMongoDB, async (req, res) 
       });
     }
 
-    console.log(`✅ Found ${allPastAnalyses.length} total past analyses`);
+    console.log(`âœ… Found ${allPastAnalyses.length} total past analyses`);
 
     // ============================================
     // SMART FILTERING: Only compare SAME industry
@@ -1963,8 +1933,8 @@ app.post('/api/compare-analysis', verifyToken, requireMongoDB, async (req, res) 
       a.industryType !== currentIndustry
     );
 
-    console.log(`📊 Same industry (${currentIndustry}): ${sameIndustryAnalyses.length} analyses`);
-    console.log(`📊 Different industries: ${differentIndustryAnalyses.length} analyses`);
+    console.log(`ðŸ“Š Same industry (${currentIndustry}): ${sameIndustryAnalyses.length} analyses`);
+    console.log(`ðŸ“Š Different industries: ${differentIndustryAnalyses.length} analyses`);
 
     // Count analyses by industry
     const industryBreakdown = allPastAnalyses.reduce((acc, analysis) => {
@@ -1991,14 +1961,14 @@ app.post('/api/compare-analysis', verifyToken, requireMongoDB, async (req, res) 
     // CASE 1: NO SAME-INDUSTRY DATA FOUND
     // ============================================
     if (sameIndustryAnalyses.length === 0) {
-      console.log('⚠️ No same-industry data found for comparison');
+      console.log('âš ï¸ No same-industry data found for comparison');
       
-      const warningMessage = `⚠️ **Comparison Not Possible**
+      const warningMessage = `âš ï¸ **Comparison Not Possible**
 
 I found ${differentIndustryAnalyses.length} past analysis/analyses, but they're from different industries:
 ${Object.entries(industryBreakdown)
   .filter(([industry]) => industry !== currentIndustry)
-  .map(([industry, data]) => `• ${industry.toUpperCase()}: ${data.count} analysis/analyses`)
+  .map(([industry, data]) => `â€¢ ${industry.toUpperCase()}: ${data.count} analysis/analyses`)
   .join('\n')}
 
 **Why can't I compare?**
@@ -2018,7 +1988,7 @@ Analyze more **${currentIndustry.toUpperCase()}** datasets to enable meaningful 
 
 **Your historical data:**
 ${Object.entries(industryBreakdown).map(([industry, data]) => 
-  `• ${industry}: ${data.count} analyses, Avg Revenue: ₹${(data.avgRevenue / 100000).toFixed(2)} lakhs`
+  `â€¢ ${industry}: ${data.count} analyses, Avg Revenue: â‚¹${(data.avgRevenue / 100000).toFixed(2)} lakhs`
 ).join('\n')}`;
 
       return res.json({
@@ -2043,7 +2013,7 @@ ${Object.entries(industryBreakdown).map(([industry, data]) =>
     // ============================================
     // CASE 2: SAME-INDUSTRY DATA FOUND - DO COMPARISON
     // ============================================
-    console.log(`✅ Comparing with ${sameIndustryAnalyses.length} same-industry analyses`);
+    console.log(`âœ… Comparing with ${sameIndustryAnalyses.length} same-industry analyses`);
 
     const validSameIndustryMetrics = sameIndustryAnalyses
       .filter(a => a.analysis?.metrics?.totalRevenue)
@@ -2082,17 +2052,17 @@ ${Object.entries(industryBreakdown).map(([industry, data]) =>
     const comparisonPrompt = `As a ${currentIndustry} business analyst, analyze this SAME-INDUSTRY performance comparison:
 
 **CURRENT ${currentIndustry.toUpperCase()} PERFORMANCE:**
-- Total Revenue: ₹${currentMetrics.totalRevenue.toLocaleString()} (₹${(currentMetrics.totalRevenue / 100000).toFixed(2)} lakhs)
+- Total Revenue: â‚¹${currentMetrics.totalRevenue.toLocaleString()} (â‚¹${(currentMetrics.totalRevenue / 100000).toFixed(2)} lakhs)
 - Growth Rate: ${currentMetrics.growthRate.toFixed(2)}%
 - Data Points: ${currentMetrics.dataPoints}
 
 **HISTORICAL ${currentIndustry.toUpperCase()} AVERAGE (Last ${validSameIndustryMetrics.length} analyses):**
-- Average Revenue: ₹${avgPastRevenue.toLocaleString()} (₹${(avgPastRevenue / 100000).toFixed(2)} lakhs)
+- Average Revenue: â‚¹${avgPastRevenue.toLocaleString()} (â‚¹${(avgPastRevenue / 100000).toFixed(2)} lakhs)
 - Average Growth: ${avgPastGrowth.toFixed(2)}%
 - Average Data Points: ${Math.round(avgPastDataPoints)}
 
 **CHANGES:**
-- Revenue Change: ${revenueChange}% ${parseFloat(revenueChange) > 0 ? '📈 UP' : '📉 DOWN'}
+- Revenue Change: ${revenueChange}% ${parseFloat(revenueChange) > 0 ? 'ðŸ“ˆ UP' : 'ðŸ“‰ DOWN'}
 - Growth Change: ${growthChange}%
 - Trend: ${trend.toUpperCase()}
 
@@ -2113,17 +2083,17 @@ Use Indian Rupee lakhs/crores format. Be direct and specific to ${currentIndustr
         { role: 'system', content: `You are a ${currentIndustry} industry analyst. Focus on ${currentIndustry}-specific insights only.` },
         { role: 'user', content: comparisonPrompt }
       ]);
-      console.log('✅ AI comparison insight generated');
+      console.log('âœ… AI comparison insight generated');
     } catch (error) {
-      console.error('⚠️ AI insight generation failed:', error.message);
+      console.error('âš ï¸ AI insight generation failed:', error.message);
       const revChange = parseFloat(revenueChange);
-      aiInsight = `Your ${currentIndustry} revenue is ${trend} with a ${Math.abs(revChange)}% ${revChange > 0 ? 'increase' : 'decrease'} compared to your historical ${currentIndustry} average of ₹${(avgPastRevenue / 100000).toFixed(2)} lakhs. ${revChange > 0 ? 'Great progress! Keep focusing on what\'s working.' : 'Consider reviewing your strategy and learning from your better-performing periods.'}`;
+      aiInsight = `Your ${currentIndustry} revenue is ${trend} with a ${Math.abs(revChange)}% ${revChange > 0 ? 'increase' : 'decrease'} compared to your historical ${currentIndustry} average of â‚¹${(avgPastRevenue / 100000).toFixed(2)} lakhs. ${revChange > 0 ? 'Great progress! Keep focusing on what\'s working.' : 'Consider reviewing your strategy and learning from your better-performing periods.'}`;
     }
 
     // Add industry context to the insight
     const contextualInsight = differentIndustryAnalyses.length > 0 
-      ? `✅ **Comparing ${currentIndustry.toUpperCase()} data only** (${sameIndustryAnalyses.length} past analyses)\n\n${aiInsight}\n\n📊 *Note: I found ${differentIndustryAnalyses.length} analyses from other industries but excluded them for accurate comparison.*`
-      : `✅ **${currentIndustry.toUpperCase()} Performance Analysis** (${sameIndustryAnalyses.length} past analyses)\n\n${aiInsight}`;
+      ? `âœ… **Comparing ${currentIndustry.toUpperCase()} data only** (${sameIndustryAnalyses.length} past analyses)\n\n${aiInsight}\n\nðŸ“Š *Note: I found ${differentIndustryAnalyses.length} analyses from other industries but excluded them for accurate comparison.*`
+      : `âœ… **${currentIndustry.toUpperCase()} Performance Analysis** (${sameIndustryAnalyses.length} past analyses)\n\n${aiInsight}`;
 
     const comparisonResult = {
       hasHistory: true,
@@ -2158,10 +2128,10 @@ Use Indian Rupee lakhs/crores format. Be direct and specific to ${currentIndustr
       aiInsight: contextualInsight
     };
 
-    console.log('✅ Same-industry comparison complete');
-    console.log(`📈 ${currentIndustry} Trend: ${trend}, Revenue Change: ${revenueChange}%`);
+    console.log('âœ… Same-industry comparison complete');
+    console.log(`ðŸ“ˆ ${currentIndustry} Trend: ${trend}, Revenue Change: ${revenueChange}%`);
     if (differentIndustryAnalyses.length > 0) {
-      console.log(`ℹ️ Excluded ${differentIndustryAnalyses.length} different-industry analyses`);
+      console.log(`â„¹ï¸ Excluded ${differentIndustryAnalyses.length} different-industry analyses`);
     }
 
     res.json({
@@ -2177,7 +2147,7 @@ Use Indian Rupee lakhs/crores format. Be direct and specific to ${currentIndustr
 // Serve React Frontend (works in all environments)
 const buildPath = path.join(__dirname, '../frontend/build');
 if (fs.existsSync(buildPath)) {
-  console.log('📦 Serving frontend from:', buildPath);
+  console.log('ðŸ“¦ Serving frontend from:', buildPath);
   
   // Serve static files (CSS, JS, images)
   app.use(express.static(buildPath));
@@ -2185,7 +2155,7 @@ if (fs.existsSync(buildPath)) {
   // API info endpoint (accessible at /api)
   app.get('/api', (req, res) => {
     res.json({
-      message: '🚀 InsightAI Backend API',
+      message: 'ðŸš€ InsightAI Backend API',
       status: 'running',
       version: '1.0.0',
       timestamp: new Date().toISOString(),
@@ -2211,28 +2181,28 @@ if (fs.existsSync(buildPath)) {
     }
   });
 } else {
-  console.log('⚠️ Frontend build folder not found. Run: cd frontend && npm run build');
+  console.log('âš ï¸ Frontend build folder not found. Run: cd frontend && npm run build');
 }
 
 // Start server
 app.listen(PORT, () => {
-  console.log(`🚀 InsightAI Backend - Universal Analytics Platform`);
-  console.log(`📍 Server running on port ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`📊 MongoDB: ${mongoose.connection.readyState === 1 ? '✅ Connected' : '⚠️ Disconnected'}`);
+  console.log(`ðŸš€ InsightAI Backend - Universal Analytics Platform`);
+  console.log(`ðŸ“ Server running on port ${PORT}`);
+  console.log(`ðŸŒ Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`ðŸ“Š MongoDB: ${mongoose.connection.readyState === 1 ? 'âœ… Connected' : 'âš ï¸ Disconnected'}`);
 });
 
 // ============================================
 // GRACEFUL SHUTDOWN
 // ============================================
 const gracefulShutdown = async () => {
-  console.log('👋 Shutting down gracefully...');
+  console.log('ðŸ‘‹ Shutting down gracefully...');
   
   try {
     await mongoose.connection.close();
-    console.log('✅ MongoDB connection closed');
+    console.log('âœ… MongoDB connection closed');
   } catch (error) {
-    console.error('❌ Error closing MongoDB:', error);
+    console.error('âŒ Error closing MongoDB:', error);
   }
   
   process.exit(0);
