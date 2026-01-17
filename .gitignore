@@ -10,3 +10,6 @@ android/
 InsightAIMobile/
 backup_jan17_2025/
 hf-deploy/
+
+firebase-base64.txt
+firebase-service-account.json
