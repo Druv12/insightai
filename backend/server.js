@@ -325,24 +325,43 @@ const requireMongoDB = (req, res, next) => {
   next();
 };
 
-// ✅ Initialize Firebase Admin with Base64 Support
+// ✅ Initialize Firebase Admin with Environment Variables
 let admin;
 try {
   let serviceAccount;
   
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    // Production: Read from base64 environment variable
+  // PRIORITY 1: Use environment variables (for Hugging Face/Docker)
+  if (process.env.FIREBASE_TYPE && process.env.FIREBASE_PRIVATE_KEY) {
+    console.log('🔑 Loading Firebase credentials from environment variables...');
+    serviceAccount = {
+      type: process.env.FIREBASE_TYPE,
+      project_id: process.env.FIREBASE_PROJECT_ID,
+      private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+      private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+      client_email: process.env.FIREBASE_CLIENT_EMAIL,
+      client_id: process.env.FIREBASE_CLIENT_ID,
+      auth_uri: "https://accounts.google.com/o/oauth2/auth",
+      token_uri: "https://oauth2.googleapis.com/token",
+      auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+      client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL
+    };
+    console.log('✅ Firebase credentials loaded from environment variables');
+  }
+  // PRIORITY 2: Use base64 JSON (alternative method)
+  else if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     console.log('🔑 Loading Firebase credentials from base64 environment variable...');
     const base64Json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
     const jsonString = Buffer.from(base64Json, 'base64').toString('utf-8');
     serviceAccount = JSON.parse(jsonString);
     console.log('✅ Firebase credentials decoded from base64');
-  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-    // Alternative: Read from file path
+  }
+  // PRIORITY 3: Use file path (if specified)
+  else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
     console.log('🔑 Loading Firebase credentials from file path...');
     serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
-  } else {
-    // Local development: Read from local file
+  }
+  // PRIORITY 4: Local development fallback
+  else {
     console.log('🔑 Loading Firebase credentials from local file...');
     serviceAccount = require('./firebase-service-account.json');
   }
