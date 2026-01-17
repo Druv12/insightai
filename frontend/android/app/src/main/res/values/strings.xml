@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">InsightAI</string>
+    <string name="title_activity_main">InsightAI</string>
+    <string name="package_name">com.druv.insightaiapp</string>
+    <string name="custom_url_scheme">com.druv.insightaiapp</string>
+</resources>

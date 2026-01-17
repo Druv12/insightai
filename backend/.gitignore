@@ -1,0 +1,111 @@
+# ============================================
+# CRITICAL SECRETS - NEVER COMMIT THESE
+# ============================================
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+backend/.env
+backend/.env.*
+frontend/.env
+frontend/.env.*
+
+# Firebase Admin SDK (CRITICAL!)
+firebase-service-account.json
+backend/firebase-service-account.json
+backend/serviceAccountKey.json
+*firebase*admin*.json
+insightai-*.json
+
+# ============================================
+# DEPENDENCIES
+# ============================================
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+package-lock.json
+yarn.lock
+.pnp
+.pnp.js
+
+# ============================================
+# BUILD & PRODUCTION FILES
+# ============================================
+frontend/build/
+frontend/dist/
+backend/dist/
+.cache/
+*.tsbuildinfo
+
+# ============================================
+# UPLOADS & USER DATA
+# ============================================
+backend/uploads/
+uploads/
+*.csv
+*.xlsx
+*.xls
+*.pdf
+*.docx
+*.doc
+
+# ============================================
+# LOGS
+# ============================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+logs/
+*.log.*
+
+# ============================================
+# TESTING
+# ============================================
+coverage/
+.nyc_output/
+*.test.js.snap
+
+# ============================================
+# IDE & EDITOR
+# ============================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ============================================
+# OS FILES
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+
+# ============================================
+# MISC
+# ============================================
+.vercel
+.netlify
+.railway
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Firebase Admin
+firebase-admin-key.json
+
+# Uploads
+uploads/
+*.log
