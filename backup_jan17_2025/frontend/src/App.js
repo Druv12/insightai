@@ -1,7 +1,8 @@
   import React, { useState, useRef, useEffect } from 'react';
   import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area, ScatterChart, Scatter, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Funnel, FunnelChart } from 'recharts';
   import { TrendingUp, TrendingDown, DollarSign, Package, Users, AlertCircle, CheckCircle, Lightbulb, Download, Mic, MicOff, Volume2, VolumeX, Play, Pause, BarChart3, PieChart as PieChartIcon, LineChart as LineChartIcon, Activity, LogOut, User, SkipBack, SkipForward, RotateCcw } from 'lucide-react';
-  import { auth, signInWithGoogle, logout, onAuthChange } from './firebase';
+  import { auth, signInWithGoogle, logout } from './firebase';
+  import { onAuthStateChanged } from 'firebase/auth';
 
   // const API_URL = process.env.REACT_APP_API_URL || '';
   const API_URL = '';
@@ -97,23 +98,32 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
       }
     };
 
- // Check authentication state - POPUP MODE
+  // Check authentication state - SIMPLIFIED for POPUP
   useEffect(() => {
     console.log('🔍 [APP] Initializing authentication...');
-    
-    // Listen for auth state changes
-    const unsubscribe = onAuthChange(async (currentUser) => {
+    let isMounted = true;
+
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (!isMounted) return;
+
+      console.log('🔐 [APP] Auth state changed');
+      console.log('🔐 [APP] Current user:', currentUser ? currentUser.email : 'none');
+      
       if (currentUser) {
         console.log('✅ [APP] User authenticated:', currentUser.email);
+        console.log('✅ [APP] User UID:', currentUser.uid);
         
+        // Store fresh token
         try {
           const token = await currentUser.getIdToken(true);
           localStorage.setItem('authToken', token);
+          console.log('✅ [APP] Token stored');
         } catch (e) {
           console.error('⚠️ [APP] Token storage failed:', e);
         }
         
         setUser(currentUser);
+        
       } else {
         console.log('ℹ️ [APP] No user signed in');
         setUser(null);
@@ -124,6 +134,7 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
 
     return () => {
       console.log('🧹 [APP] Cleaning up auth listener');
+      isMounted = false;
       unsubscribe();
     };
   }, []);
@@ -392,19 +403,23 @@ const [showStatsSection, setShowStatsSection] = useState(false); // Optional: co
       }
     };
 
-    // Handle Google Sign-In
+  // Handle Google Sign-In
   const handleSignIn = async () => {
     try {
       console.log('🔐 [APP] Sign-in button clicked');
-      await signInWithGoogle();
+      const user = await signInWithGoogle();
+      
+      if (user) {
+        console.log('✅ [APP] Sign-in successful:', user.email);
+        speak('Welcome! You have successfully signed in.');
+      }
     } catch (error) {
       console.error('❌ [APP] Sign-in error:', error);
-      if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {
-        setError(error.message || 'Failed to sign in. Please try again.');
-        speak('Sign in failed. Please try again.');
-      }
+      setError(error.message || 'Failed to sign in. Please try again.');
+      speak('Sign in failed. Please try again.');
     }
   };
+
     // Handle Logout
     const handleLogout = async () => {
       try {

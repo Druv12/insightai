@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: insightai-app
+    ports:
+      - "5000:5000"
+      - "3000:3000"
+    environment:
+      # Backend Environment Variables
+      - NODE_ENV=production
+      - PORT=5000
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - MONGODB_URI=${MONGODB_URI}
+      - FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
+      
+      # Frontend Environment Variables
+      - REACT_APP_API_URL=${REACT_APP_API_URL}
+      - REACT_APP_FIREBASE_API_KEY=${REACT_APP_FIREBASE_API_KEY}
+      - REACT_APP_FIREBASE_AUTH_DOMAIN=${REACT_APP_FIREBASE_AUTH_DOMAIN}
+      - REACT_APP_FIREBASE_PROJECT_ID=${REACT_APP_FIREBASE_PROJECT_ID}
+      - REACT_APP_FIREBASE_STORAGE_BUCKET=${REACT_APP_FIREBASE_STORAGE_BUCKET}
+      - REACT_APP_FIREBASE_MESSAGING_SENDER_ID=${REACT_APP_FIREBASE_MESSAGING_SENDER_ID}
+      - REACT_APP_FIREBASE_APP_ID=${REACT_APP_FIREBASE_APP_ID}
+    volumes:
+      - ./uploads:/app/backend/uploads
+    restart: unless-stopped
+    networks:
+      - insightai-network
+
+networks:
+  insightai-network:
+    driver: bridge

@@ -11,60 +11,11 @@ const statisticalAnalysis = require('./utils/statisticalAnalysis');
 const { detectAvailableMetrics, detectIndustryType, generateIndustryMetrics } = require('./utils/schemaAwareAnalysis');
 const { generateSQLDocumentation, formatSQLForDisplay } = require('./utils/sqlDocumentation');
 const pdf = require('pdf-parse');
+
 const mammoth = require('mammoth');
 
 require('dotenv').config();
 
-// ============================================
-// INJECT FIREBASE CONFIG AT RUNTIME
-// ============================================
-const createFirebaseConfig = () => {
-  const buildPath = path.join(__dirname, '..', 'frontend', 'build');
-  
-  console.log('🔍 [CONFIG] Build path:', buildPath);
-  console.log('🔍 [CONFIG] Build path exists:', fs.existsSync(buildPath));
-  
-  // Create build directory if it doesn't exist
-  if (!fs.existsSync(buildPath)) {
-    console.log('⚠️ [CONFIG] Build directory not found, creating it...');
-    fs.mkdirSync(buildPath, { recursive: true });
-  }
-  
-  // Create the Firebase config object
-  const firebaseConfig = {
-    apiKey: process.env.REACT_APP_FIREBASE_API_KEY || '',
-    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || '',
-    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || '',
-    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || '',
-    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || '',
-    appId: process.env.REACT_APP_FIREBASE_APP_ID || '',
-    measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID || ''
-  };
-
-  // Create the config.js file
-  const configJsContent = `window.firebaseConfig = ${JSON.stringify(firebaseConfig, null, 2)};`;
-  const configJsPath = path.join(buildPath, 'config.js');
-  
-  console.log('🔍 [CONFIG] Creating Firebase config file at:', configJsPath);
-  fs.writeFileSync(configJsPath, configJsContent);
-  console.log('✅ Firebase config injected at runtime');
-  
-  // Also create env-config.js as a backup
-  const envConfigContent = `window.ENV = ${JSON.stringify({
-    REACT_APP_API_URL: '',
-    ...firebaseConfig
-  }, null, 2)};`;
-  fs.writeFileSync(path.join(buildPath, 'env-config.js'), envConfigContent);
-  console.log('✅ Environment config created');
-};
-
-// Call this before starting the server
-try {
-  createFirebaseConfig();
-} catch (error) {
-  console.error('❌ Failed to create Firebase config:', error.message);
-  console.error('Stack:', error.stack);
-}
 
 // ============================================
 // SECURITY UTILITIES
@@ -125,8 +76,8 @@ const validateDataType = (dataType) => {
 };
 const app = express();
 app.set('trust proxy', 1);
+const PORT = process.env.PORT || 5000;
 
-const PORT = process.env.PORT || 7860;
 // Middleware
 const rateLimit = require('express-rate-limit');
 const timeout = require('connect-timeout');
@@ -136,35 +87,29 @@ app.use((req, res, next) => {
   if (!req.timedout) next();
 });
 
+// ✅ SECURE: Restrict CORS to specific origins
 const allowedOrigins = process.env.NODE_ENV === 'production'
-? [
-      process.env.FRONTEND_URL,
-      'https://insightai-app-v2.firebaseapp.com'
-    ].filter(Boolean)
+  ? [
+      process.env.FRONTEND_URL, // e.g., 'https://insightai.vercel.app'
+      'https://your-custom-domain.com'
+    ].filter(Boolean) // Remove undefined values
   : [
       'http://localhost:3000',
       'http://localhost:5000',
-      'http://127.0.0.1:3000',
-      'http://localhost:7860',
-      'http://127.0.0.1:7860'
+      'http://127.0.0.1:3000'
     ];
+
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
-    // Check exact matches
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn('⚠️ Blocked CORS request from:', origin);
+      callback(new Error('Not allowed by CORS'));
     }
-    
-    // Allow all Render domains in production
-    if (process.env.NODE_ENV === 'production' && origin && origin.includes('.onrender.com')) {
-      return callback(null, true);
-    }
-    
-    console.warn('⚠️ Blocked CORS request from:', origin);
-    callback(new Error('Not allowed by CORS'));
   },
   credentials: true, // Allow cookies
   optionsSuccessStatus: 200,
@@ -2200,7 +2145,7 @@ Use Indian Rupee lakhs/crores format. Be direct and specific to ${currentIndustr
 });
 
 // Serve React Frontend (works in all environments)
-const buildPath = path.join(__dirname, '..', 'frontend', 'build');
+const buildPath = path.join(__dirname, '../frontend/build');
 if (fs.existsSync(buildPath)) {
   console.log('📦 Serving frontend from:', buildPath);
   

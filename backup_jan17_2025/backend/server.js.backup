@@ -7,64 +7,11 @@ const dotenv = require('dotenv');
 const fs = require('fs');
 const multer = require('multer');
 const XLSX = require('xlsx');
-const statisticalAnalysis = require('./utils/statisticalAnalysis');
-const { detectAvailableMetrics, detectIndustryType, generateIndustryMetrics } = require('./utils/schemaAwareAnalysis');
-const { generateSQLDocumentation, formatSQLForDisplay } = require('./utils/sqlDocumentation');
 const pdf = require('pdf-parse');
 const mammoth = require('mammoth');
 
 require('dotenv').config();
 
-// ============================================
-// INJECT FIREBASE CONFIG AT RUNTIME
-// ============================================
-const createFirebaseConfig = () => {
-  const buildPath = path.join(__dirname, '..', 'frontend', 'build');
-  
-  console.log('🔍 [CONFIG] Build path:', buildPath);
-  console.log('🔍 [CONFIG] Build path exists:', fs.existsSync(buildPath));
-  
-  // Create build directory if it doesn't exist
-  if (!fs.existsSync(buildPath)) {
-    console.log('⚠️ [CONFIG] Build directory not found, creating it...');
-    fs.mkdirSync(buildPath, { recursive: true });
-  }
-  
-  // Create the Firebase config object
-  const firebaseConfig = {
-    apiKey: process.env.REACT_APP_FIREBASE_API_KEY || '',
-    authDomain: process.env.REACT_APP_FIREBASE_AUTH_DOMAIN || '',
-    projectId: process.env.REACT_APP_FIREBASE_PROJECT_ID || '',
-    storageBucket: process.env.REACT_APP_FIREBASE_STORAGE_BUCKET || '',
-    messagingSenderId: process.env.REACT_APP_FIREBASE_MESSAGING_SENDER_ID || '',
-    appId: process.env.REACT_APP_FIREBASE_APP_ID || '',
-    measurementId: process.env.REACT_APP_FIREBASE_MEASUREMENT_ID || ''
-  };
-
-  // Create the config.js file
-  const configJsContent = `window.firebaseConfig = ${JSON.stringify(firebaseConfig, null, 2)};`;
-  const configJsPath = path.join(buildPath, 'config.js');
-  
-  console.log('🔍 [CONFIG] Creating Firebase config file at:', configJsPath);
-  fs.writeFileSync(configJsPath, configJsContent);
-  console.log('✅ Firebase config injected at runtime');
-  
-  // Also create env-config.js as a backup
-  const envConfigContent = `window.ENV = ${JSON.stringify({
-    REACT_APP_API_URL: '',
-    ...firebaseConfig
-  }, null, 2)};`;
-  fs.writeFileSync(path.join(buildPath, 'env-config.js'), envConfigContent);
-  console.log('✅ Environment config created');
-};
-
-// Call this before starting the server
-try {
-  createFirebaseConfig();
-} catch (error) {
-  console.error('❌ Failed to create Firebase config:', error.message);
-  console.error('Stack:', error.stack);
-}
 
 // ============================================
 // SECURITY UTILITIES
@@ -124,9 +71,8 @@ const validateDataType = (dataType) => {
   return allowedTypes.includes(dataType) ? dataType : undefined;
 };
 const app = express();
-app.set('trust proxy', 1);
+const PORT = process.env.PORT || 5000;
 
-const PORT = process.env.PORT || 7860;
 // Middleware
 const rateLimit = require('express-rate-limit');
 const timeout = require('connect-timeout');
@@ -136,35 +82,29 @@ app.use((req, res, next) => {
   if (!req.timedout) next();
 });
 
+// ✅ SECURE: Restrict CORS to specific origins
 const allowedOrigins = process.env.NODE_ENV === 'production'
-? [
-      process.env.FRONTEND_URL,
-      'https://insightai-app-v2.firebaseapp.com'
-    ].filter(Boolean)
+  ? [
+      process.env.FRONTEND_URL, // e.g., 'https://insightai.vercel.app'
+      'https://your-custom-domain.com'
+    ].filter(Boolean) // Remove undefined values
   : [
       'http://localhost:3000',
       'http://localhost:5000',
-      'http://127.0.0.1:3000',
-      'http://localhost:7860',
-      'http://127.0.0.1:7860'
+      'http://127.0.0.1:3000'
     ];
+
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (mobile apps, Postman, etc.)
     if (!origin) return callback(null, true);
     
-    // Check exact matches
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      console.warn('⚠️ Blocked CORS request from:', origin);
+      callback(new Error('Not allowed by CORS'));
     }
-    
-    // Allow all Render domains in production
-    if (process.env.NODE_ENV === 'production' && origin && origin.includes('.onrender.com')) {
-      return callback(null, true);
-    }
-    
-    console.warn('⚠️ Blocked CORS request from:', origin);
-    callback(new Error('Not allowed by CORS'));
   },
   credentials: true, // Allow cookies
   optionsSuccessStatus: 200,
@@ -369,43 +309,33 @@ const requireMongoDB = (req, res, next) => {
   next();
 };
 
-// ✅ Initialize Firebase Admin with Base64 Support
+// Firebase Authentication - SECURE VERSION
 let admin;
 try {
-  let serviceAccount;
-  
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    // Production: Read from base64 environment variable
-    console.log('🔑 Loading Firebase credentials from base64 environment variable...');
-    const base64Json = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    const jsonString = Buffer.from(base64Json, 'base64').toString('utf-8');
-    serviceAccount = JSON.parse(jsonString);
-    console.log('✅ Firebase credentials decoded from base64');
-  } else if (process.env.FIREBASE_SERVICE_ACCOUNT_PATH) {
-    // Alternative: Read from file path
-    console.log('🔑 Loading Firebase credentials from file path...');
-    serviceAccount = require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH);
-  } else {
-    // Local development: Read from local file
-    console.log('🔑 Loading Firebase credentials from local file...');
-    serviceAccount = require('./firebase-service-account.json');
-  }
-
   admin = require('firebase-admin');
   
-  if (!admin.apps.length) {
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
+  // Support both environment variable JSON string AND file path
+  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT 
+    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+    : process.env.FIREBASE_SERVICE_ACCOUNT_PATH 
+      ? require(process.env.FIREBASE_SERVICE_ACCOUNT_PATH)
+      : null;
+  
+  if (!serviceAccount) {
+    throw new Error('Firebase credentials not configured');
   }
   
-  console.log('✅ Firebase Admin initialized successfully');
-  console.log('✅ Project ID:', serviceAccount.project_id);
-  
+  if (!admin.apps.length) {
+    admin.initializeApp({ 
+      credential: admin.credential.cert(serviceAccount) 
+    });
+  }
+  console.log('✅ Firebase Admin initialized');
 } catch (error) {
-  console.error('❌ Firebase Admin initialization failed:', error.message);
+  console.error('⚠️ Firebase Admin initialization failed:', error.message);
   console.log('🔓 Running in NO-AUTH mode for testing');
 }
+
 const verifyToken = async (req, res, next) => {
   try {
     if (!admin) {
@@ -500,11 +430,10 @@ function validateData(csvData) {
 // GROQ API HELPER WITH DETAILED LOGGING
 // ============================================
 async function callGroqAPI(messages) {
-  // ✅ SECURE: Conditional logging only in development
-  if (process.env.NODE_ENV === 'development') {
-    console.log('🤖 [GROQ] Starting API call...');
-    console.log('🤖 [GROQ] API Key present:', !!GROQ_API_KEY);
-  }
+  console.log('🤖 [GROQ] Starting API call...');
+  console.log('🤖 [GROQ] API Key present:', !!GROQ_API_KEY);
+  console.log('🤖 [GROQ] API Key length:', GROQ_API_KEY?.length || 0);
+  console.log('🤖 [GROQ] API Key prefix:', GROQ_API_KEY?.substring(0, 8) || 'N/A');
   
   if (!GROQ_API_KEY) {
     console.error('❌ [GROQ] API Key is missing!');
@@ -513,13 +442,11 @@ async function callGroqAPI(messages) {
 
   if (!GROQ_API_KEY.startsWith('gsk_')) {
     console.error('❌ [GROQ] Invalid API Key format!');
-    // ✅ SECURE: No key details in production
-    if (process.env.NODE_ENV === 'development') {
-      console.error('   Expected: gsk_...');
-      console.error('   Got:', GROQ_API_KEY.substring(0, 10) + '...');
-    }
+    console.error('   Expected: gsk_...');
+    console.error('   Got:', GROQ_API_KEY.substring(0, 10) + '...');
     throw new Error('Invalid GROQ_API_KEY format. Key should start with "gsk_"');
   }
+
   const requestPayload = {
     model: 'llama-3.3-70b-versatile',
     messages: messages,
@@ -835,39 +762,6 @@ const createDistribution = (values, bucketCount = 5) => {
 };
 
 // ============================================
-// TEXT-TO-SPEECH FORMATTING HELPER
-// ============================================
-const convertToIndianFormat = (text) => {
-  // Convert large numbers to lakhs/crores for better speech
-  return text.replace(/₹[\d,]+/g, (match) => {
-    const number = parseFloat(match.replace(/[₹,]/g, ''));
-    
-    if (isNaN(number)) return match;
-    
-    if (number >= 10000000) {
-      // Crores
-      const crores = number / 10000000;
-      // ✅ FIXED: Remove "rupees" when using lakhs/crores
-      return crores % 1 === 0 
-        ? `${crores} crore` 
-        : `${crores.toFixed(2)} crore`;
-    } else if (number >= 100000) {
-      // Lakhs
-      const lakhs = number / 100000;
-      // ✅ FIXED: Remove "rupees" when using lakhs/crores
-      return lakhs % 1 === 0 
-        ? `${lakhs} lakh` 
-        : `${lakhs.toFixed(2)} lakh`;
-    } else if (number >= 1000) {
-      // Thousands - add "rupees" for smaller amounts
-      return `${number.toLocaleString('en-IN')} rupees`;
-    } else {
-      return `${number} rupees`;
-    }
-  });
-};
-
-// ============================================
 // SMART SAMPLING FOR EXAMPLES
 // ============================================
 const extractRepresentativeSamples = (csvData, sampleSize = 60) => {
@@ -1152,6 +1046,7 @@ app.get('/api/health', (req, res) => {
   
   res.status(statusCode).json(health);
 });
+
 app.post('/api/auth/login', verifyToken, async (req, res) => {
   try {
     const { uid, email, name, picture } = req.user;
@@ -1415,7 +1310,7 @@ app.post('/api/analyze', verifyToken, async (req, res) => {
   try {
     const { question, csvData, datasetId } = req.body;
     
-    console.log('📊 [ANALYZE] User:', req.user.email);  
+    console.log('📊 [ANALYZE] User:', req.user.email);
     console.log('📊 [ANALYZE] Question:', question?.substring(0, 100) + '...');
     console.log('📊 [ANALYZE] CSV Data present:', !!csvData);
     console.log('📊 [ANALYZE] Dataset ID:', datasetId || 'none');
@@ -1428,61 +1323,9 @@ app.post('/api/analyze', verifyToken, async (req, res) => {
     console.log('🤖 Analyzing for:', req.user.email);
     
     const validation = validateData(csvData);
+    const industryType = validation.industryType;
     const rowCount = csvData.data.length;
-
-    // ============================================
-    // PERFORM STATISTICAL ANALYSIS
-    // ============================================
-    console.log('🔬 Running statistical analysis...');
-
-    // ============================================
-    // Calculate Schema-Aware Industry Metrics
-    // ============================================
-    const availableColumns = detectAvailableMetrics(csvData.headers);
-    const industryType = detectIndustryType(availableColumns);  // ← Only ONE declaration!
-    const schemaMetrics = generateIndustryMetrics(csvData, industryType, availableColumns);
-
-    console.log('🎯 Detected Industry:', industryType);
-    console.log('📊 Schema-Aware Metrics:', schemaMetrics);
-
-console.log('🎯 Detected Industry:', industryType);
-console.log('📊 Schema-Aware Metrics:', schemaMetrics);
-
-// NEW: Generate SQL Documentation
-const sqlQueries = generateSQLDocumentation(csvData, schemaMetrics, availableColumns);
-const formattedSQL = formatSQLForDisplay(sqlQueries);
-console.log('🗄️ SQL Queries Generated:', sqlQueries.length);
-
-let statisticalResults = null;
-
-// Detect numeric columns for analysis
-const numericColumns = csvData.headers.map((header, index) => {
-  const values = csvData.data.map(row => row[index]).filter(v => typeof v === 'number');
-  return values.length > 0 ? { header, index, values } : null;
-}).filter(Boolean);
-
-if (numericColumns.length > 0) {
-  // Analyze the first numeric column (usually revenue/amount)
-  const primaryColumn = numericColumns[0];
-  
-  statisticalResults = {
-    columnName: primaryColumn.header,
-    anomalyDetection: {
-      ...statisticalAnalysis.detectAnomalies(primaryColumn.values),
-      percentage: ((statisticalAnalysis.detectAnomalies(primaryColumn.values).totalAnomalies / primaryColumn.values.length) * 100).toFixed(2)
-    },
-    trendAnalysis: statisticalAnalysis.detectTrend(primaryColumn.values),
-    confidenceInterval: statisticalAnalysis.calculateConfidenceInterval(primaryColumn.values),
-    growthTest: statisticalAnalysis.testGrowthSignificance(primaryColumn.values),
-    diagnostics: statisticalAnalysis.performDiagnostics(primaryColumn.values)
-  };
-  
-  console.log('✅ Statistical analysis complete:', {
-    anomalies: statisticalResults.anomalyDetection?.totalAnomalies || 0,
-    trend: statisticalResults.trendAnalysis?.trendDirection,
-    rSquared: statisticalResults.trendAnalysis?.rSquared
-  });
-}
+    
     // ============================================
     // TWO-STAGE ANALYSIS: Stats + Samples
     // ============================================
@@ -1536,282 +1379,82 @@ ${csvData.data.slice(0, 20).map(row => row.join(' | ')).join('\n')}
 
 FULL DATA: ${JSON.stringify(csvData)}`;
     }
-    // EXPANDED EXECUTIVE REPORT FORMAT
-const expandedPrompt = `You are a senior business analyst preparing an executive-level performance report for C-suite stakeholders and board members.
+    // CONCISE FORMAT (ChatGPT's recommendation)
+    const concisePrompt = `Analyze this ${industryType} dataset and answer: "${question}"
 
-DATASET CONTEXT:
 ${dataContext}
 
-BUSINESS QUESTION:
-"${question}"
+${validation.warnings.length > 0 ? 'WARNINGS: ' + validation.warnings.join(', ') : ''}
 
-${validation.warnings.length > 0 ? 
-'⚠️ DATA QUALITY WARNINGS: ' + validation.warnings.join(' | ') : ''}
+CRITICAL FORMAT REQUIREMENT - Use this EXACT structure:
 
-${statisticalResults ? `
-📊 STATISTICAL FINDINGS AVAILABLE:
-${statisticalResults.trendAnalysis && parseFloat(statisticalResults.trendAnalysis.rSquared) > 0.3 ? 
-  `- Trend Strength: R² = ${statisticalResults.trendAnalysis.rSquared} (${parseFloat(statisticalResults.trendAnalysis.rSquared) > 0.7 ? 'Strong' : 'Moderate'} correlation)` 
-  : '- Trend: Observable pattern but not statistically strong'}
-${statisticalResults.growthTest && statisticalResults.growthTest.pValue ? 
-  `- Growth Significance: p-value ${statisticalResults.growthTest.pValue} (${statisticalResults.growthTest.isSignificant ? 'Statistically significant' : 'Not significant'})` 
-  : ''}
-- Anomalies Detected: ${statisticalResults.anomalyDetection?.totalAnomalies || 0} outliers (${statisticalResults.anomalyDetection?.percentage || 0}% of data)
-${statisticalResults.confidenceInterval ? 
-  `- 95% Confidence Interval: ₹${parseFloat(statisticalResults.confidenceInterval.lower).toLocaleString()} - ₹${parseFloat(statisticalResults.confidenceInterval.upper).toLocaleString()}` 
-  : ''}
-` : ''}
+📊 KEY INSIGHTS (3 bullets max, with actual numbers):
+• [Insight 1 with specific metrics]
+• [Insight 2 with trend]
+• [Insight 3 with comparison]
 
-═══════════════════════════════════════════════════════════════
-REPORT STRUCTURE - Follow this EXACT format:
-═══════════════════════════════════════════════════════════════
+🎯 TOP RECOMMENDATION:
+[One clear, actionable step]
 
-📊 EXECUTIVE SUMMARY
+💰 EXPECTED IMPACT:
+[Measurable outcome if recommendation is followed]
 
-Write 2-3 professional sentences summarizing:
-- Overall business performance with key revenue/growth numbers
-- Primary trend direction (improving/declining/stable)
-- Most critical business insight or opportunity
+RULES:
+- Be CONCISE - no long paragraphs
+- Include ALL specific numbers (revenue, growth %, quantities) in lakhs/crores
+- One short recommendation with measurable impact
+- Professional but direct tone
+Use emojis: 📊📈💰🎯⚠️🔥`;
 
-Use concrete metrics in Indian Rupee format (lakhs/crores).
+    const answer = await callGroqAPI([
+      { role: 'system', content: 'You are a concise business analyst. Always use the exact format provided.' },
+      { role: 'user', content: concisePrompt }
+    ]);
 
+    let responseType = 'text';
+    let chartData = null;
+    let cleanedAnswer = answer;
 
-🔍 DETAILED ANALYSIS
-
-1. Revenue & Financial Performance
-
-Provide a clear paragraph discussing:
-- Total revenue: ₹X (specify in lakhs/crores)
-- Average per transaction/period/unit: ₹X
-- Highest performing segment/period (with specific numbers)
-- Lowest performing area (with specific numbers)
-- Revenue distribution patterns across categories
-
-2. Growth & Trend Analysis
-
-Write a structured paragraph covering:
-- Overall growth rate: X%
-- Trend direction and consistency
-${statisticalResults && parseFloat(statisticalResults.trendAnalysis?.rSquared || 0) > 0.3 ? 
-  `- Statistical validation: Reference R² value to show trend reliability` 
-  : '- Growth pattern based on period-over-period comparison'}
-- Notable acceleration or deceleration periods
-- Month-over-month or period-over-period changes
-
-3. Key Patterns & Business Insights
-
-Discuss in paragraph form:
-- Top 3 performing products/periods/categories (with exact figures)
-- Bottom 3 underperformers (with improvement potential)
-- Seasonal or cyclical patterns if detected
-${statisticalResults && statisticalResults.anomalyDetection?.totalAnomalies > 0 ? 
-  `- Notable outliers: ${statisticalResults.anomalyDetection.totalAnomalies} data points showing unusual behavior` 
-  : ''}
-- Emerging trends or correlations worth noting
-
-4. ${industryType === 'fintech' ? 'FinTech Performance Metrics' : 
-     industryType === 'marketing' ? 'Marketing Campaign Metrics' : 
-     industryType === 'ecommerce' ? 'E-commerce Performance Metrics' : 
-     industryType === 'saas' ? 'SaaS Business Metrics' :
-     'Industry-Specific Metrics'}
-
-${industryType === 'fintech' ? 
-  'Analyze: Monthly Active Users (MAU), Average Revenue Per User (ARPU), Transaction Volume, Customer Retention Rate, Churn Rate' :
-  industryType === 'marketing' ? 
-  'Analyze: Conversion Rate, Click-Through Rate (CTR), Cost Per Acquisition (CPA), Return on Ad Spend (ROAS), Campaign Performance' :
-  industryType === 'ecommerce' ? 
-  'Analyze: Average Order Value (AOV), Cart Abandonment Rate, Product Performance, Customer Lifetime Value (CLV), Repeat Purchase Rate' :
-  industryType === 'saas' ? 
-  'Analyze: Monthly Recurring Revenue (MRR), Customer Acquisition Cost (CAC), Churn Rate, Net Revenue Retention (NRR), Customer Lifetime Value' :
-  'Analyze key performance indicators relevant to your business model with actual data points'}
-
-
-🎯 STRATEGIC RECOMMENDATIONS
-
-Priority 1: [Most Critical Action]
-- What to do: [Specific, actionable step]
-- Business rationale: [Data-driven reason with supporting numbers]
-- Expected impact: [Quantified outcome - "Could increase revenue by X%" or "May improve metric Y by Z%"]
-- Implementation timeline: [Immediate/This Month/This Quarter]
-
-Priority 2: [Important Secondary Action]
-- What to do: [Specific recommendation]
-- Business rationale: [Evidence from analysis]
-- Expected impact: [Measurable outcome with ₹ or % estimate]
-- Implementation timeline: [When to execute]
-
-Priority 3: [Strategic Long-term Action]
-- What to do: [Forward-looking recommendation]
-- Business rationale: [Trend-based reasoning]
-- Expected impact: [Projected result]
-- Implementation timeline: [Planning horizon]
-
-
-⚠️ RISKS & CONSIDERATIONS
-
-List 2-3 key risks or challenges:
-- Business execution risks based on current data patterns
-- Market or operational challenges visible in the data
-- Data quality concerns: ${statisticalResults?.diagnostics?.dataQuality !== 'Good' ? 
-    `Data quality rated as ${statisticalResults.diagnostics.dataQuality} - consider validation` 
-    : 'Data quality is good'}
-
-
-📋 ASSUMPTIONS & LIMITATIONS
-
-Clearly state:
-- Data scope: ${validation.rowCount} records analyzed (${validation.rowCount >= 1000 ? 'Statistically robust sample' : 'Limited sample size - interpret with caution'})
-- Time period covered: [Extract from data]
-- Key assumptions made in the analysis
-- External factors not considered (market conditions, seasonality, competition)
-- Confidence level in recommendations: ${parseFloat(statisticalResults?.trendAnalysis?.rSquared || 0) > 0.7 ? 'High (strong statistical support)' : 
-  parseFloat(statisticalResults?.trendAnalysis?.rSquared || 0) > 0.4 ? 'Moderate (observable trends)' : 
-  'Limited (directional insights only)'}
-
-
-💡 ACTIONABLE NEXT STEPS
-
-1. Immediate (This Week): [Urgent action item]
-2. Short-term (This Month): [Important follow-up]
-3. Strategic (This Quarter): [Long-term initiative]
-
-
-📈 FORECASTING & PROJECTIONS
-
-${statisticalResults && parseFloat(statisticalResults.trendAnalysis?.rSquared || 0) > 0.5 ? 
-  `Based on statistically significant trend analysis (R² = ${statisticalResults.trendAnalysis.rSquared}):
-
-FORECAST:
-- Projected next period performance: [Provide estimate]
-- 95% Confidence Range: ₹${parseFloat(statisticalResults.confidenceInterval?.lower || 0).toLocaleString()} - ₹${parseFloat(statisticalResults.confidenceInterval?.upper || 0).toLocaleString()}
-- Forecast confidence: High (supported by strong historical correlation)
-
-FORECAST ASSUMPTIONS:
-- Current business trajectory continues without major disruptions
-- Market conditions remain relatively stable
-- No significant competitive or regulatory changes
-- Historical patterns continue to apply
-
-⚠️ USE WITH CAUTION: Forecasts are probabilistic estimates, not guarantees. Monitor actual performance and adjust strategy accordingly.`
-  :
-  `⚠️ FORECASTING NOT RECOMMENDED
-
-Current data shows ${statisticalResults?.trendAnalysis?.trendDirection || 'variable'} patterns but lacks statistical confidence for reliable forecasting${statisticalResults?.trendAnalysis?.rSquared ? ` (R² = ${statisticalResults.trendAnalysis.rSquared})` : ''}.
-
-DIRECTIONAL GUIDANCE:
-- Recent trend suggests ${statisticalResults?.trendAnalysis?.trendDirection || 'mixed'} movement
-- Recommend: Collect more data points before making projection-based decisions
-- Alternative: Use scenario planning (best case / base case / worst case) instead of single-point forecasts
-
-Focus on near-term actions rather than long-range predictions.`}
-
-
-═══════════════════════════════════════════════════════════════
-WRITING GUIDELINES (CRITICAL):
-═══════════════════════════════════════════════════════════════
-
-✅ TONE & STYLE:
-- Write for C-suite executives (CEO, CFO, COO level)
-- Professional, confident, decision-oriented language
-- Avoid unnecessary technical jargon
-- Use emojis ONLY for section headers, not within analysis text
-- Balance data rigor with business accessibility
-
-✅ NUMERICAL PRECISION:
-- Always use Indian Rupee format (₹ lakhs/crores)
-- Include percentages with one decimal place (X.X%)
-- Round large numbers appropriately (₹45.6 lakhs, not ₹4,563,247)
-- Compare numbers to averages, benchmarks, or prior periods for context
-
-✅ STRUCTURE:
-- Executive Summary: Flowing prose (2-3 sentences, no bullets)
-- Analysis sections: Clear paragraphs with embedded data points
-- Recommendations: Structured bullet format (What/Why/Impact/Timeline)
-- Avoid bullet points except in Recommendations, Risks, and Next Steps
-
-✅ DATA INTEGRITY:
-- Only cite statistical measures when they exist and are meaningful
-- Never fabricate numbers - use "not available" if data is missing
-- Acknowledge data limitations transparently
-- Provide confidence levels for predictions
-
-✅ BUSINESS IMPACT:
-- Every insight must connect to business value (revenue, cost, risk, growth)
-- Recommendations must be specific and implementable
-- Quantify expected outcomes wherever possible
-- Consider feasibility and resource requirements
-
-
-═══════════════════════════════════════════════════════════════
-CRITICAL SUCCESS FACTORS:
-═══════════════════════════════════════════════════════════════
-
-This report will be presented to senior leadership and potentially external stakeholders (board members, investors, partners).
-
-Ensure:
-1. Every claim is supported by data from the dataset
-2. Recommendations are practical and defensible
-3. Risks and limitations are stated upfront
-4. Language is professional and presentation-ready
-5. Report can stand up to executive questioning
-
-Deliver analysis that drives business decisions, not just describes data.
-`;
-
-const answer = await callGroqAPI([
-  { role: 'system', content: 'You are a senior business analyst creating comprehensive executive reports. Follow the format exactly and provide detailed, data-driven insights.' },
-  { role: 'user', content: expandedPrompt }
-]);
-// ✅ ADD THESE LINES:
-let responseType = 'text';
-let chartData = null;
-let cleanedAnswer = answer;
-
-if (answer.includes('SHOW_CHART')) {
-  responseType = 'chart';
-  cleanedAnswer = answer.replace('SHOW_CHART', '').trim();
-  chartData = csvData.data.slice(0, 10).map((row, i) => ({
-    label: `${row[0]} - ${row[1] || i}`,
-    value: row[csvData.headers.length - 1] || 0
-  }));
-}
-
-if (datasetId) {
-  await Analysis.create({
-    userId: req.user.uid,
-    datasetId: datasetId,
-    question: question,
-    answer: cleanedAnswer,
-    confidence: validation.confidence,
-    industryType: industryType,
-    metrics: {
-      dataPoints: validation.rowCount,
-      timeRange: `${csvData.data.length} records`
+    if (answer.includes('SHOW_CHART')) {
+      responseType = 'chart';
+      cleanedAnswer = answer.replace('SHOW_CHART', '').trim();
+      chartData = csvData.data.slice(0, 10).map((row, i) => ({
+        label: `${row[0]} - ${row[1] || i}`,
+        value: row[csvData.headers.length - 1] || 0
+      }));
     }
-  });
-}
 
-console.log('✅ [ANALYZE] Analysis complete - response length:', answer.length);
-console.log('📊 [ANALYZE] ==================== REQUEST COMPLETE ====================');
+    if (datasetId) {
+      await Analysis.create({
+        userId: req.user.uid,
+        datasetId: datasetId,
+        question: question,
+        answer: cleanedAnswer,
+        confidence: validation.confidence,
+        industryType: industryType,
+        metrics: {
+          dataPoints: validation.rowCount,
+          timeRange: `${csvData.data.length} records`
+        }
+      });
+    }
 
-res.json({ 
-  success: true,
-  type: responseType, 
-  content: cleanedAnswer, 
-  chartData,
-  confidence: validation.confidence,
-  industryType: industryType,
-  statistics: statisticalResults,
-  schemaMetrics: schemaMetrics,        // ← NEW
-  availableColumns: availableColumns,  // ← NEW
-  sqlQueries: sqlQueries,              // ← NEW
-  formattedSQL: formattedSQL,          // ← NEW
-  metadata: {
-    totalRevenue: validation.totalRevenue,
-    rowCount: validation.rowCount,
-    warnings: validation.warnings
-  }
-});
+    console.log('✅ [ANALYZE] Analysis complete - response length:', answer.length);
+    console.log('📊 [ANALYZE] ==================== REQUEST COMPLETE ====================');
+    
+    res.json({ 
+      success: true,
+      type: responseType, 
+      content: cleanedAnswer, 
+      chartData,
+      confidence: validation.confidence,
+      industryType: industryType,
+      metadata: {
+        totalRevenue: validation.totalRevenue,
+        rowCount: validation.rowCount,
+        warnings: validation.warnings
+      }
+    });
   } catch (error) {
     console.error('❌ [ANALYZE] Analysis failed!');
     console.error('❌ [ANALYZE] Error type:', error.name);
@@ -2200,36 +1843,10 @@ Use Indian Rupee lakhs/crores format. Be direct and specific to ${currentIndustr
 });
 
 // Serve React Frontend (works in all environments)
-const buildPath = path.join(__dirname, '..', 'frontend', 'build');
+const buildPath = path.join(__dirname, '../frontend/build');
 if (fs.existsSync(buildPath)) {
   console.log('📦 Serving frontend from:', buildPath);
-  
-  // Serve static files (CSS, JS, images)
   app.use(express.static(buildPath));
-  
-  // API info endpoint (accessible at /api)
-  app.get('/api', (req, res) => {
-    res.json({
-      message: '🚀 InsightAI Backend API',
-      status: 'running',
-      version: '1.0.0',
-      timestamp: new Date().toISOString(),
-      endpoints: {
-        health: '/api/health',
-        demoDatasets: '/api/demo-datasets',
-        uploadFile: '/api/upload-file',
-        parseData: '/api/parse-data',
-        analyze: '/api/analyze',
-        saveAnalysis: '/api/save-analysis',
-        analysisHistory: '/api/analysis-history',
-        compareAnalysis: '/api/compare-analysis'
-      },
-      docs: 'https://github.com/Druv12/insightai',
-      frontend: 'https://insightais.onrender.com'
-    });
-  });
-  
-  // Serve React app for all non-API routes (THIS MUST BE LAST)
   app.get('*', (req, res) => {
     if (!req.path.startsWith('/api')) {
       res.sendFile(path.join(buildPath, 'index.html'));
