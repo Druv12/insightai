@@ -235,8 +235,11 @@ const generateIndustryMetrics = (csvData, industryType, availableColumns) => {
   // Helper: Calculate sum safely
   const calculateSum = (columnName) => {
     if (!columnName) return 0;
+    const colIndex = headers.indexOf(columnName);
+    if (colIndex === -1) return 0;
+    
     return csvData.data.reduce((sum, row) => {
-      const value = parseFloat(row[columnName]);
+      const value = parseFloat(row[colIndex]);
       return sum + (isNaN(value) ? 0 : value);
     }, 0);
   };
@@ -245,7 +248,7 @@ const generateIndustryMetrics = (csvData, industryType, availableColumns) => {
   const calculateAverage = (columnName) => {
     if (!columnName) return 0;
     const sum = calculateSum(columnName);
-    return sum / csvData.data.length;
+    return csvData.data.length > 0 ? sum / csvData.data.length : 0;
   };
   
   // Universal metrics (work for any dataset)

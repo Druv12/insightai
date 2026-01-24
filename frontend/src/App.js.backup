@@ -7,18 +7,8 @@
     const API_URL = '';
 
     function App() {
-  // ============================================
-  // ADAPTIVE TIMEOUT HELPER
-  // ============================================
- const getAdaptiveTimeout = (rowCount) => {
-  if (rowCount < 1000) return 30000;      // 30s for small datasets
-  if (rowCount < 5000) return 60000;      // 60s for medium datasets
-  if (rowCount < 10000) return 120000;    // 2 minutes for large datasets
-  return 300000;                          // 5 minutes for huge datasets (MATCHES BACKEND)
-};
-
-  // Authentication states
-  const [user, setUser] = useState(null);
+      // Authentication states
+      const [user, setUser] = useState(null);
       const [authLoading, setAuthLoading] = useState(true);
       const [rawData, setRawData] = useState('');
       const [inputMode, setInputMode] = useState('text'); // 'text' or 'file' ← ADD THIS
@@ -214,7 +204,7 @@
               });
             }
             if (result.statistics) setStatistics(result.statistics);
-            if (result.industryMetrics) setSchemaMetrics(result.industryMetrics);
+            if (result.schemaMetrics) setSchemaMetrics(result.schemaMetrics);
             if (result.availableColumns) setAvailableColumns(result.availableColumns);
             if (result.sqlQueries) setSQLQueries(result.sqlQueries);
 
@@ -578,7 +568,9 @@
           const result = await response.json();
 
           if (result.success) {
-            setRawData(result.extractedData);speak(`File ${file.name} uploaded successfully. Click Analyze to process the data.`);
+            setRawData(result.extractedData);
+             await loadPreviousAnalysis(file.name);
+            speak(`File ${file.name} uploaded successfully. Click Analyze to process the data.`);
           } else {
             setError(result.error || 'Failed to process file');
             speak('Failed to process the file. Please try again.');
@@ -660,68 +652,49 @@
     };
 
       const performAutoAnalysis = async (data) => {
-  const startTime = performance.now();
-  setLoading(true);
-  setShowPlaybackControls(false);
-  
-  const rowCount = data.data.length;
-  console.log(`⏱️ Analysis started for ${rowCount} rows`);
-  
-  // ============================================
-  // ADAPTIVE TIMEOUT BASED ON DATASET SIZE
-  // ============================================
-  const timeoutDuration = getAdaptiveTimeout(rowCount);
-  
-  if (rowCount > 5000) {
-    setError('');
-    console.log(`⏳ Processing ${rowCount.toLocaleString()} rows - timeout set to ${timeoutDuration/1000}s`);
-    
-    // Show user-friendly progress message
-    const estimatedTime = Math.ceil(timeoutDuration / 1000);
-    speak(`Processing large dataset with ${rowCount} rows. This may take up to ${estimatedTime} seconds.`);
-  }
-  
-  try {
-    const analysisPrompt = `As a professional data analyst presenting to HR/Management...`; // Your full prompt
-    
-    const token = user ? await user.getIdToken() : null;
-    const headers = {
-      'Content-Type': 'application/json'
-    };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
+      setLoading(true);
+      setShowPlaybackControls(false);
+      
+      const rowCount = data.data.length;
+      if (rowCount > 10000) {
+        setError('');
+        console.log(`⏳ Processing ${rowCount.toLocaleString()} rows - this may take 30-60 seconds...`);
+      }
+      
+      try {
+        const analysisPrompt = `As a professional data analyst presenting to HR/Management...`; // Your full prompt
+        
+        const token = user ? await user.getIdToken() : null;
+        const headers = {
+          'Content-Type': 'application/json'
+        };
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
 
-    // ============================================
-    // ADAPTIVE TIMEOUT PROTECTION
-    // ============================================
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutDuration);
+        // ✅ Load previous analysis BEFORE calling API
+await loadPreviousAnalysis(uploadedFileName || 'dataset.csv');
 
-    const response = await fetch(`${API_URL}/api/analyze`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        question: analysisPrompt, 
-        csvData: data,
-        fileName: uploadedFileName || 'dataset.csv'
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
+const response = await fetch(`${API_URL}/api/analyze`, {
+  method: 'POST',
+  headers,
+  body: JSON.stringify({
+    question: analysisPrompt, 
+    csvData: data,
+    fileName: uploadedFileName || 'dataset.csv'
+  })
+});
 
         const result = await response.json();
 
         // ✅ FIXED: Added space after "if"
         if (result.success) {  
           setAutoAnalysis({
-          summary: result.content,
-          metrics: calculateMetrics(data),
-          charts: prepareChartData(data),
-          industryType: result.industryType || 'business',
-          industryMetrics: result.industryMetrics,  // ← ADD THIS LINE!
-          statistics: result.statistics
+            summary: result.content,
+            metrics: calculateMetrics(data),
+            charts: prepareChartData(data),
+            industryType: result.industryType || 'business',
+            statistics: result.statistics
           });
           
           // ✅ DEBUG: Log what we're receiving from backend
@@ -738,9 +711,9 @@
             setStatistics(result.statistics);
             console.log('✅ Statistics set');
           }
-          if (result.industryMetrics) {
-            setSchemaMetrics(result.industryMetrics);
-            console.log('✅ Industry metrics set:', result.industryMetrics);
+          if (result.schemaMetrics) {
+            setSchemaMetrics(result.schemaMetrics);
+            console.log('✅ Schema metrics set');
           }
           if (result.availableColumns) {
             setAvailableColumns(result.availableColumns);
@@ -764,39 +737,12 @@
         }
         
       } catch (err) {
-  console.error('Auto-analysis failed:', err);
-  
-  // ============================================
-  // SMART ERROR HANDLING WITH TIMEOUT DETECTION
-  // ============================================
-  if (err.name === 'AbortError') {
-    const rowCount = data.data.length;
-    const timeoutDuration = getAdaptiveTimeout(rowCount);
-    
-    setError(
-      `⏱️ Analysis timed out after ${timeoutDuration/1000}s for ${rowCount.toLocaleString()} rows.\n\n` +
-      `Solutions:\n` +
-      `1. Reduce dataset to < 10,000 rows\n` +
-      `2. Use data sampling\n` +
-      `3. Split into smaller files\n` +
-      `4. Contact support for enterprise solutions`
-    );
-    
-    speak(
-      `Analysis timed out after ${timeoutDuration/1000} seconds. ` +
-      `Your dataset has ${rowCount} rows which is too large. ` +
-      `Please reduce the file size and try again.`
-    );
-  } else {
-    setError('Analysis failed. Please try again.');
-    speak('Analysis failed. Please check your data and try again.');
-  }
-} finally {
-  setLoading(false);
-  const endTime = performance.now();
-  const duration = ((endTime - startTime) / 1000).toFixed(2);
-  console.log(`⏱️ Total analysis time: ${duration}s`);
-}
+        console.error('Auto-analysis failed:', err);
+        setError('Analysis failed. Please try again.');
+        speak('Analysis failed. Please check your data and try again.');
+      } finally {
+        setLoading(false);
+      }
     };
     
       const saveAnalysisToMongo = async (csvData, summary, metrics) => {
@@ -1232,9 +1178,9 @@
           if (result.success) {
             setAnalysis(result.content);
             setStatistics(result.statistics);
-            setSchemaMetrics(result.industryMetrics);
-            setAvailableColumns(result.availableColumns);
-            setSQLQueries(result.sqlQueries);
+  setSchemaMetrics(result.schemaMetrics);
+  setAvailableColumns(result.availableColumns);
+  setSQLQueries(result.sqlQueries);
             setTimeout(() => {
               speak(result.content);
             }, 500);
@@ -1254,35 +1200,26 @@
       };
 
       const handleChatSubmit = async () => {
-  if (!chatInput.trim() || chatLoading) return;
+        if (!chatInput.trim() || chatLoading) return;
 
-  const userMessage = { role: 'user', content: chatInput };
-  setChatMessages(prev => [...prev, userMessage]);
-  setChatInput('');
-  setChatLoading(true);
+        const userMessage = { role: 'user', content: chatInput };
+        setChatMessages(prev => [...prev, userMessage]);
+        setChatInput('');
+        setChatLoading(true);
 
-  try {
-    const token = user ? await user.getIdToken() : null;
-    const headers = { 'Content-Type': 'application/json' };
-    if (token) headers['Authorization'] = `Bearer ${token}`;
+        try {
+          const token = user ? await user.getIdToken() : null;
+          const headers = { 'Content-Type': 'application/json' };
+          if (token) headers['Authorization'] = `Bearer ${token}`;
 
-    // ============================================
-    // ADAPTIVE TIMEOUT FOR CHAT (45s default)
-    // ============================================
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 45000);
-
-    const response = await fetch(`${API_URL}/api/chat-analyze`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        message: chatInput,
-        conversationHistory: chatMessages
-      }),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
+          const response = await fetch(`${API_URL}/api/chat-analyze`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+              message: chatInput,
+              conversationHistory: chatMessages
+            })
+          });
 
           const result = await response.json();
 
@@ -1312,9 +1249,9 @@
               setStatistics(result.statistics);
             }
             
-            if (result.industryMetrics) {
-            setSchemaMetrics(result.industryMetrics);
-          }
+            if (result.schemaMetrics) {
+              setSchemaMetrics(result.schemaMetrics);
+            }
             
             if (result.availableColumns) {
               setAvailableColumns(result.availableColumns);
@@ -1330,39 +1267,16 @@
           } else {
             throw new Error(result.error);
           }
-       } catch (error) {
-  console.error('Chat error:', error);
-  
-  // ============================================
-  // SMART ERROR HANDLING WITH TIMEOUT DETECTION
-  // ============================================
-  let errorContent = '❌ Sorry, I encountered an error. Please try again or rephrase your question.';
-  
-  if (error.name === 'AbortError') {
-    errorContent = 
-      '⏱️ Request timed out after 45 seconds.\n\n' +
-      'Your query is too complex or the data is too large.\n\n' +
-      'Try:\n' +
-      '• Simplifying your question\n' +
-      '• Using smaller datasets\n' +
-      '• Breaking into multiple queries';
-  }
-  
-  const errorMessage = {
-    role: 'assistant',
-    content: errorContent
-  };
-  setChatMessages(prev => [...prev, errorMessage]);
-  
-  if (voiceEnabled) {
-    const spokenError = error.name === 'AbortError' 
-      ? 'Request timed out. Your query is too complex. Please simplify and try again.'
-      : 'Sorry, I encountered an error. Please try again.';
-    speak(spokenError);
-  }
-} finally {
-  setChatLoading(false);
-}
+        } catch (error) {
+          console.error('Chat error:', error);
+          const errorMessage = {
+            role: 'assistant',
+            content: '❌ Sorry, I encountered an error. Please try again or rephrase your question.'
+          };
+          setChatMessages(prev => [...prev, errorMessage]);
+        } finally {
+          setChatLoading(false);
+        }
       };
 
       const autoCharts = autoAnalysis?.charts || [];
@@ -1758,63 +1672,50 @@
             </div>
 
   {/* Mode Toggle */}
-<div style={{
-  background: 'rgba(255,255,255,0.95)',
-  borderRadius: '20px',
-  padding: '20px',
-  marginBottom: '20px',
-  boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
-  display: 'flex',
-  gap: '15px',
-  justifyContent: 'center'
-}}>
-  <button
-    onClick={() => {
-      setShowConversationalMode(false);
-      // ✅ Clear Talk to AI mode data when switching to Upload mode
-      setChatMessages([]);
-      setChatInput('');
-    }}
-    style={{
-      padding: '15px 30px',
-      background: !showConversationalMode ? 'linear-gradient(135deg, #1e3a8a, #7c3aed)' : 'white',
-      color: !showConversationalMode ? 'white' : '#1e3a8a',
-      border: `2px solid ${!showConversationalMode ? '#1e3a8a' : '#d1d5db'}`,
-      borderRadius: '12px',
-      fontSize: '1.1em',
-      fontWeight: 'bold',
-      cursor: 'pointer',
-      transition: 'all 0.3s'
-    }}
-  >
-    📊 Upload Data Mode
-  </button>
-  <button
-    onClick={() => {
-      setShowConversationalMode(true);
-      // ✅ Clear Upload mode data when switching to Talk to AI
-      setAutoAnalysis(null);
-      setAnalysis(null);
-      setSchemaMetrics(null);
-      setStatistics(null);
-      setAvailableColumns(null);
-      setSQLQueries(null);
-    }}
-    style={{
-      padding: '15px 30px',
-      background: showConversationalMode ? 'linear-gradient(135deg, #10b981, #059669)' : 'white',
-      color: showConversationalMode ? 'white' : '#10b981',
-      border: `2px solid ${showConversationalMode ? '#10b981' : '#d1d5db'}`,
-      borderRadius: '12px',
-      fontSize: '1.1em',
-      fontWeight: 'bold',
-      cursor: 'pointer',
-      transition: 'all 0.3s'
-    }}
-  >
-    💬 Talk to AI Mode
-  </button>
-</div>
+            <div style={{
+              background: 'rgba(255,255,255,0.95)',
+              borderRadius: '20px',
+              padding: '20px',
+              marginBottom: '20px',
+              boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
+              display: 'flex',
+              gap: '15px',
+              justifyContent: 'center'
+            }}>
+              <button
+                onClick={() => setShowConversationalMode(false)}
+                style={{
+                  padding: '15px 30px',
+                  background: !showConversationalMode ? 'linear-gradient(135deg, #1e3a8a, #7c3aed)' : 'white',
+                  color: !showConversationalMode ? 'white' : '#1e3a8a',
+                  border: `2px solid ${!showConversationalMode ? '#1e3a8a' : '#d1d5db'}`,
+                  borderRadius: '12px',
+                  fontSize: '1.1em',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  transition: 'all 0.3s'
+                }}
+              >
+                📊 Upload Data Mode
+              </button>
+              <button
+                onClick={() => setShowConversationalMode(true)}
+                style={{
+                  padding: '15px 30px',
+                  background: showConversationalMode ? 'linear-gradient(135deg, #10b981, #059669)' : 'white',
+                  color: showConversationalMode ? 'white' : '#10b981',
+                  border: `2px solid ${showConversationalMode ? '#10b981' : '#d1d5db'}`,
+                  borderRadius: '12px',
+                  fontSize: '1.1em',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                  transition: 'all 0.3s'
+                }}
+              >
+                💬 Talk to AI Mode
+              </button>
+            </div>
+
             {/* Conversational AI Interface */}
             {showConversationalMode && (
               <div style={{
@@ -2023,6 +1924,8 @@
                 {/* Key Metrics Dashboard */}
                   <div style={{ marginTop: '30px', marginBottom: '20px' }}>
                     <h3 style={{ color: '#1e3a8a', marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <BarChart3 size={24} />
+                      📊 Extracted Metrics
                     </h3>
                     <div style={{ 
                       display: 'grid', 
@@ -2166,114 +2069,16 @@
                         marginBottom: '20px',
                         boxShadow: '0 10px 30px rgba(0,0,0,0.2)'
                       }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-                          <h3 style={{ color: '#1e3a8a', margin: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <BarChart3 size={24} />
-                            📊 Visual Analysis
-                          </h3>
-                          <button
-                            onClick={() => setShowChartSelector(!showChartSelector)}
-                            style={{
-                              padding: '10px 20px',
-                              background: 'linear-gradient(135deg, #1e3a8a, #7c3aed)',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '10px',
-                              cursor: 'pointer',
-                              fontWeight: 'bold',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '8px'
-                            }}
-                          >
-                            <BarChart3 size={18} />
-                            {showChartSelector ? 'Hide Chart Options' : 'Choose Charts'}
-                          </button>
-                        </div>
-
-                        {/* Chart Selector */}
-                        {showChartSelector && (
-                          <div style={{
-                            background: '#f9fafb',
-                            borderRadius: '12px',
-                            padding: '20px',
-                            marginBottom: '20px',
-                            border: '2px solid #e5e7eb'
-                          }}>
-                            <div style={{ marginBottom: '15px', color: '#374151', fontWeight: '500' }}>
-                              Select charts to display (choose up to 8):
-                            </div>
-                            <div style={{
-                              display: 'grid',
-                              gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                              gap: '10px'
-                            }}>
-                              {CHART_OPTIONS.map(chart => (
-                                <button
-                                  key={chart.id}
-                                  onClick={() => {
-                                    if (selectedCharts.includes(chart.id)) {
-                                      setSelectedCharts(selectedCharts.filter(c => c !== chart.id));
-                                    } else if (selectedCharts.length < 8) {
-                                      setSelectedCharts([...selectedCharts, chart.id]);
-                                    }
-                                  }}
-                                  style={{
-                                    padding: '12px',
-                                    background: selectedCharts.includes(chart.id)
-                                      ? 'linear-gradient(135deg, #10b981, #059669)'
-                                      : 'white',
-                                    color: selectedCharts.includes(chart.id) ? 'white' : '#374151',
-                                    border: selectedCharts.includes(chart.id)
-                                      ? '2px solid #059669'
-                                      : '2px solid #d1d5db',
-                                    borderRadius: '8px',
-                                    cursor: 'pointer',
-                                    fontWeight: '500',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '8px',
-                                    transition: 'all 0.2s'
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    if (!selectedCharts.includes(chart.id)) {
-                                      e.currentTarget.style.borderColor = '#9ca3af';
-                                      e.currentTarget.style.background = '#f9fafb';
-                                    }
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    if (!selectedCharts.includes(chart.id)) {
-                                      e.currentTarget.style.borderColor = '#d1d5db';
-                                      e.currentTarget.style.background = 'white';
-                                    }
-                                  }}
-                                >
-                                  {chart.icon}
-                                  <div style={{ textAlign: 'left', flex: 1 }}>
-                                    <div style={{ fontSize: '0.9em' }}>{chart.name}</div>
-                                    <div style={{
-                                      fontSize: '0.7em',
-                                      opacity: 0.7,
-                                      marginTop: '2px'
-                                    }}>
-                                      {chart.description}
-                                    </div>
-                                  </div>
-                                  {selectedCharts.includes(chart.id) && (
-                                    <CheckCircle size={16} />
-                                  )}
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
+                        <h3 style={{ color: '#1e3a8a', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                          <BarChart3 size={24} />
+                          📊 Visual Analysis
+                        </h3>
                         <div style={{ 
                           display: 'grid', 
                           gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))',
                           gap: '25px'
                         }}>
-                          {selectedCharts.map(chartType => {
+                          {selectedCharts.slice(0, 2).map(chartType => {
                             const chartOption = CHART_OPTIONS.find(c => c.id === chartType);
                             return (
                               <div 
@@ -2336,134 +2141,6 @@
                           </div>
                         </div>
                       </div>
-                    </div>
-                  )}
-
-                  {/* ==================== INDUSTRY METRICS SECTION FOR TALK TO AI MODE ==================== */}
-                  {(schemaMetrics || autoAnalysis?.industryMetrics) && (
-                    <div style={{
-                      background: 'rgba(255,255,255,0.95)',
-                      borderRadius: '20px',
-                      padding: '30px',
-                      marginBottom: '20px',
-                      boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
-                      marginTop: '20px'
-                    }}>
-                      <h2 style={{ fontSize: '1.8em', fontWeight: 'bold', marginBottom: '20px', color: '#1f2937' }}>
-                        💼 Industry-Specific Metrics
-                      </h2>
-
-                      {/* Industry Type Badge */}
-                      <div style={{
-                        display: 'inline-block',
-                        background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
-                        color: 'white',
-                        padding: '10px 20px',
-                        borderRadius: '20px',
-                        fontWeight: 'bold',
-                        marginBottom: '20px',
-                        fontSize: '1.1em'
-                      }}>
-                        🏭 Industry: {(autoAnalysis?.industryType || csvData?.industryType || 'BUSINESS').toUpperCase()}
-                      </div>
-
-                      <div style={{
-                        display: 'grid',
-                        gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-                        gap: '20px',
-                        marginBottom: '30px'
-                      }}>
-                        {/* Display Industry Metrics */}
-                        {(() => {
-                          const metricsToDisplay = schemaMetrics || autoAnalysis?.industryMetrics || {};
-                          
-                          return Object.entries(metricsToDisplay)
-                            .filter(([key]) => key !== 'topProducts' && key !== 'channelBreakdown')
-                            .map(([key, value], index) => (
-                              <div key={index} style={{
-                                background: 'white',
-                                borderRadius: '12px',
-                                padding: '24px',
-                                boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                                border: '2px solid #8b5cf6'
-                              }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-                                  <h3 style={{ margin: 0, fontSize: '1em', color: '#6b7280' }}>{key}</h3>
-                                </div>
-                                <p style={{ fontSize: '2em', fontWeight: 'bold', color: '#8b5cf6', margin: 0 }}>
-                                  {typeof value === 'number' ? value.toLocaleString() : value}
-                                </p>
-                              </div>
-                            ));
-                        })()}
-                      </div>
-
-                      {/* Top Products Section */}
-                      {(schemaMetrics?.topProducts || autoAnalysis?.industryMetrics?.topProducts) && (
-                        <div style={{
-                          background: 'white',
-                          borderRadius: '12px',
-                          padding: '24px',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.1)',
-                          marginBottom: '20px'
-                        }}>
-                          <h3 style={{ fontSize: '1.3em', fontWeight: 'bold', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <Package size={24} style={{ color: '#3b82f6' }} />
-                            Top Products by Revenue
-                          </h3>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                            {(schemaMetrics?.topProducts || autoAnalysis?.industryMetrics?.topProducts || []).map((product, index) => (
-                              <div key={index} style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                padding: '12px',
-                                background: '#f3f4f6',
-                                borderRadius: '8px'
-                              }}>
-                                <span style={{ fontWeight: '600', color: '#374151' }}>
-                                  {index + 1}. {product.product}
-                                </span>
-                                <span style={{ fontWeight: 'bold', color: '#10b981' }}>
-                                  ₹{product.revenue.toLocaleString()}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Channel Breakdown Section */}
-                      {(schemaMetrics?.channelBreakdown || autoAnalysis?.industryMetrics?.channelBreakdown) && (
-                        <div style={{
-                          background: 'white',
-                          borderRadius: '12px',
-                          padding: '24px',
-                          boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-                        }}>
-                          <h3 style={{ fontSize: '1.3em', fontWeight: 'bold', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-                            <Activity size={24} style={{ color: '#ec4899' }} />
-                            Channel Performance
-                          </h3>
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                            {Object.entries(schemaMetrics?.channelBreakdown || autoAnalysis?.industryMetrics?.channelBreakdown || {}).map(([channel, revenue], index) => (
-                              <div key={index} style={{
-                                display: 'flex',
-                                justifyContent: 'space-between',
-                                alignItems: 'center',
-                                padding: '12px',
-                                background: '#fef3f2',
-                                borderRadius: '8px'
-                              }}>
-                                <span style={{ fontWeight: '600', color: '#374151' }}>{channel}</span>
-                                <span style={{ fontWeight: 'bold', color: '#ec4899' }}>
-                                  ₹{revenue.toLocaleString()}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
                 </>
@@ -3246,45 +2923,35 @@
                     </button>
                   )}
                 </div>
-               {/* INDUSTRY METRICS TAB */}
+                {/* INDUSTRY METRICS TAB */}
                 {activeMetricsTab === 'industry' && (
                   <div>
-                    {!schemaMetrics ? (
-                      <div style={{ textAlign: 'center', padding: '40px', color: '#6b7280' }}>
-                        <AlertCircle size={48} style={{ marginBottom: '15px' }} />
-                        <div style={{ fontSize: '1.2em', fontWeight: 'bold', marginBottom: '10px' }}>
-                          No Industry Metrics Available
-                        </div>
-                        <div>Analyze some data first to see industry-specific insights!</div>
-                      </div>
-                    ) : (
-                      <>
-                        <h2 style={{ fontSize: '1.8em', fontWeight: 'bold', marginBottom: '20px', color: '#1f2937' }}>
-                          💼 Industry-Specific Metrics
-                        </h2>
+                    <h2 style={{ fontSize: '1.8em', fontWeight: 'bold', marginBottom: '20px', color: '#1f2937' }}>
+                      💼 Industry-Specific Metrics
+                    </h2>
 
-                        {/* Industry Type Badge */}
-                        <div style={{
-                          display: 'inline-block',
-                          background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
-                          color: 'white',
-                          padding: '10px 20px',
-                          borderRadius: '20px',
-                          fontWeight: 'bold',
-                          marginBottom: '20px',
-                          fontSize: '1.1em'
-                        }}>
-                          🏭 Industry: {autoAnalysis?.industryType?.toUpperCase() || 'BUSINESS'}
-                        </div>
-                        
-                        <div style={{
-                          display: 'grid',
-                          gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
-                          gap: '20px',
-                          marginBottom: '30px'
-                        }}>
-                          {/* ARPU Card */}
-                          {schemaMetrics?.arpu && (
+                    {/* Industry Type Badge */}
+                    <div style={{
+                      display: 'inline-block',
+                      background: 'linear-gradient(135deg, #8b5cf6, #7c3aed)',
+                      color: 'white',
+                      padding: '10px 20px',
+                      borderRadius: '20px',
+                      fontWeight: 'bold',
+                      marginBottom: '20px',
+                      fontSize: '1.1em'
+                    }}>
+                      🏭 Industry: {autoAnalysis?.industryType?.toUpperCase() || 'BUSINESS'}
+                    </div>
+                    
+                    <div style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))',
+                      gap: '20px',
+                      marginBottom: '30px'
+                    }}>
+                      {/* ARPU Card */}
+                      {schemaMetrics.arpu && (
                         <div style={{
                           background: 'white',
                           borderRadius: '12px',
@@ -3415,8 +3082,6 @@
                           ))}
                         </div>
                       </div>
-                  )}
-                      </>
                     )}
                   </div>
                 )}

@@ -1,6 +1,5 @@
 ﻿const express = require('express');
 const cors = require('cors');
-const AdvancedStatistics = require('./utils/advancedStats');
 const axios = require('axios');
 const mongoose = require('mongoose');
 const path = require('path');
@@ -181,35 +180,7 @@ const PORT = process.env.PORT || 7860;
 const rateLimit = require('express-rate-limit');
 const timeout = require('connect-timeout');
 
-// ============================================
-// ADAPTIVE TIMEOUT MIDDLEWARE
-// ============================================
-const adaptiveTimeoutMiddleware = (req, res, next) => {
-  const path = req.path;
-  
-  // Analysis routes get 5 minutes (large datasets)
-  if (path.includes('/analyze') || path.includes('/parse-data')) {
-    console.log(`⏱️ Setting 300s timeout for ${path}`);
-    return timeout('300s')(req, res, next);
-  }
-  
-  // File upload routes get 3 minutes
-  if (path.includes('/upload-file')) {
-    console.log(`⏱️ Setting 180s timeout for ${path}`);
-    return timeout('180s')(req, res, next);
-  }
-  
-  // Chat routes get 2 minutes
-  if (path.includes('/chat')) {
-    console.log(`⏱️ Setting 120s timeout for ${path}`);
-    return timeout('120s')(req, res, next);
-  }
-  
-  // Default timeout for everything else
-  return timeout('60s')(req, res, next);
-};
-
-app.use(adaptiveTimeoutMiddleware);
+app.use(timeout('60s')); // 60 second timeout
 app.use((req, res, next) => {
   if (!req.timedout) next();
 });
@@ -404,10 +375,8 @@ const analysisSchema = new mongoose.Schema({
   rawData: String,
   csvData: {
     headers: [String],
-    data: [[mongoose.Schema.Types.Mixed]],
-    fileName: String 
+    data: [[mongoose.Schema.Types.Mixed]]
   },
-  sqlQueries: [String],  
   analysis: {
     summary: String,
     metrics: {
@@ -1572,110 +1541,87 @@ app.post('/api/analyze', verifyToken, async (req, res) => {
     const columnMap = mapColumnNames(csvData);
     console.log('🗺️ Column Mapping:', columnMap);
 
-    // Generate SQL conditionally (saves 2-3 seconds for large datasets)
-    let sqlQueries = [];
-    if (rowCount <= 1000) {
-      sqlQueries = generateValidatedSQL(csvData, schemaMetrics, availableColumns);
-      console.log('🗄️ SQL Queries Generated:', sqlQueries.length);
-    } else {
-      console.log('⚠️ Dataset too large - skipping SQL generation for performance');
-    }
-
-// ============================================
-// OPTIMIZED STATISTICAL ANALYSIS (Non-blocking)
-// ============================================
-let statisticalResults = null;
-
-if (statsCheck.allowed) {
-  console.log('📊 Running FAST statistical analysis...');
-
-  // Find first numeric column only (faster)
-  let primaryColumn = null;
-  
-  for (let index = 0; index < csvData.headers.length; index++) {
-    const header = csvData.headers[index];
-    const values = csvData.data
-      .slice(0, 1000) // Only analyze first 1000 rows for speed
-      .map(row => parseFloat(row[index]))
-      .filter(val => !isNaN(val) && isFinite(val));
-    
-    if (values.length >= 10) {
-      // Prioritize revenue/sales columns
-      if (header.toLowerCase().includes('revenue') ||
-          header.toLowerCase().includes('sales') ||
-          header.toLowerCase().includes('amount') ||
-          header.toLowerCase().includes('price') ||
-          header.toLowerCase().includes('value')) {
-        primaryColumn = { header, index, values };
-        break;
-      } else if (!primaryColumn) {
-        primaryColumn = { header, index, values };
-      }
-    }
-  }
-
-  if (primaryColumn) {
-    console.log(`📊 Analyzing: ${primaryColumn.header} (${primaryColumn.values.length} values)`);
-    
-    try {
-      const stats = new AdvancedStatistics(primaryColumn.values, primaryColumn.header);
-      statisticalResults = stats.getFullAnalysis();
-      console.log('✅ Statistics computed:', {
-        sampleSize: statisticalResults.sampleSize,
-        mean: statisticalResults.mean?.toFixed(2),
-        outliers: statisticalResults.outliersIQR?.count || 0
-      });
-    } catch (error) {
-      console.error('⚠️ Stats calculation failed:', error.message);
-      statisticalResults = {
-        disabled: true,
-        reason: 'Calculation error: ' + error.message,
-        sampleSize: primaryColumn.values.length
-      };
-    }
-  } else {
-    statisticalResults = {
-      disabled: true,
-      reason: 'No numeric columns found with 10+ valid values',
-      sampleSize: csvData.data.length
-    };
-  }
-} else {
-  statisticalResults = {
-    disabled: true,
-    reason: statsCheck.reason || `Sample size too small (${csvData?.data?.length || 0} rows)`,
-    sampleSize: csvData?.data?.length || 0
-  };
-}
+    // Generate SQL with validated column names
+    const sqlQueries = generateValidatedSQL(csvData, schemaMetrics, availableColumns);
+    console.log('🗄️ SQL Queries Generated:', sqlQueries.length);
 
     // ============================================
-    // OPTIMIZED DATA SAMPLING (50% Faster)
+    // CONDITIONAL STATISTICAL ANALYSIS
+    // ============================================
+    let statisticalResults = null;
+
+    if (statsCheck.allowed) {
+      console.log('📊 Sample size adequate - running statistical analysis...');
+
+      // Detect numeric columns for analysis
+      const numericColumns = csvData.headers.map((header, index) => {
+        const values = csvData.data.map(row => {
+          const val = parseFloat(row[index]);
+          return isNaN(val) ? null : val;
+        }).filter(v => v !== null);
+        
+        return values.length > 0 ? { header, index, values } : null;
+      }).filter(Boolean);
+
+      if (numericColumns.length > 0) {
+        const primaryColumn = numericColumns[0];
+
+        // Calculate basic statistics
+        const mean = primaryColumn.values.reduce((a, b) => a + b, 0) / primaryColumn.values.length;
+        const sortedValues = [...primaryColumn.values].sort((a, b) => a - b);
+        const median = sortedValues[Math.floor(sortedValues.length / 2)];
+        
+        statisticalResults = {
+          columnName: primaryColumn.header,
+          sampleSize: primaryColumn.values.length,
+          mean: mean,
+          median: median,
+          min: Math.min(...primaryColumn.values),
+          max: Math.max(...primaryColumn.values),
+          total: primaryColumn.values.reduce((a, b) => a + b, 0)
+        };
+
+        console.log('✅ Statistical analysis complete:', statisticalResults);
+      }
+    } else {
+      console.log('⚠️ Statistical analysis DISABLED:', statsCheck.reason);
+      statisticalResults = {
+        disabled: true,
+        reason: statsCheck.reason,
+        sampleSize: rowCount
+      };
+    }
+
+    // ============================================
+    // PREPARE DATA FOR AI
     // ============================================
     let dataContext = '';
     let sampleData = '';
 
-    if (rowCount > 50) {
-      console.log(`📊 Large dataset (${rowCount} rows) - using optimized sampling`);
+    if (rowCount > 100) {
+      console.log(`📊 Large dataset (${rowCount} rows) - using aggregation`);
       
-      // Only send 20 rows to AI (first 12 + last 8)
-      const firstRows = csvData.data.slice(0, 12);
-      const lastRows = csvData.data.slice(-8);
+      // Get first 10 and last 5 rows for context
+      const firstRows = csvData.data.slice(0, 10);
+      const lastRows = csvData.data.slice(-5);
       
       sampleData = `
-📋 Sample Data (First 12 rows):
+📋 Sample Data (First 10 rows):
 ${csvData.headers.join(' | ')}
 ${firstRows.map(row => row.join(' | ')).join('\n')}
 
-... (${rowCount - 20} rows analyzed) ...
+... (${rowCount - 15} more rows) ...
 
-📋 Recent Data (Last 8 rows):
-${lastRows.map(row => row.join(' | ')).join('\n')}`;
+📋 Recent Data (Last 5 rows):
+${lastRows.map(row => row.join(' | ')).join('\n')}
+`;
     } else {
-      // Small datasets - show all
+      // Show all data for small datasets
       sampleData = `
 📋 Complete Dataset (${rowCount} rows):
 ${csvData.headers.join(' | ')}
-${csvData.data.map(row => row.join(' | ')).join('\n')}`;
+${csvData.data.map(row => row.join(' | ')).join('\n')}
+`;
     }
 
     dataContext = `
@@ -1755,7 +1701,7 @@ Sample Size: ${rowCount} data points
           }
         ],
         temperature: 0.3,
-        max_tokens: 1500  // Reduced from 2000 for faster responses
+        max_tokens: 2000
       })
     });
 
@@ -1771,50 +1717,34 @@ Sample Size: ${rowCount} data points
     console.log('✅ AI Response received');
     console.log('📝 Response length:', answer.length, 'characters');
 
-   // SAVE TO DATABASE (if datasetId provided)
+    // ============================================
+    // SAVE TO DATABASE (if datasetId provided)
+    // ============================================
     if (datasetId) {
       try {
         const analysis = new Analysis({
           userId: req.user.uid,
           datasetId: datasetId,
-          csvData: {
-            headers: csvData.headers,
-            data: csvData.data.slice(0, 100), // Save first 100 rows only
-            fileName: req.body.fileName || 'dataset.csv'  // ✅ ADDED
-          },
-          sqlQueries: sqlQueries,  // ✅ ADDED
-          analysis: {
-            summary: answer,
-            metrics: {
-              totalRevenue: VALIDATED_TOTALS.totalRevenue,
-              avgRevenue: VALIDATED_TOTALS.avgRevenue,
-              dataPoints: rowCount,
-              growthRate: null
-            }
-          },
-          questions: [{
-            question: question,
-            answer: answer,
-            confidence: 'high',
-            timestamp: new Date()
-          }],
+          question: question,
+          answer: answer,
           industryType: industryType,
+          dataMetrics: {
+            rowCount: rowCount,
+            columnCount: csvData.headers.length,
+            totalRevenue: VALIDATED_TOTALS.totalRevenue,
+            avgRevenue: VALIDATED_TOTALS.avgRevenue
+          },
           timestamp: new Date()
         });
 
         await analysis.save();
-        console.log('✅ Analysis saved to database with SQL queries');
+        console.log('✅ Analysis saved to database');
       } catch (dbError) {
         console.error('⚠️ Failed to save analysis:', dbError.message);
         // Don't fail the request if DB save fails
       }
     }
 
-    console.log('🎯 SENDING TO FRONTEND:', {
-  hasIndustryMetrics: !!schemaMetrics,
-  metricsKeys: Object.keys(schemaMetrics || {}),
-  firstThreeMetrics: Object.entries(schemaMetrics || {}).slice(0, 3)
-});
     // ============================================
     // RETURN COMPLETE RESPONSE
     // ============================================
@@ -1824,7 +1754,6 @@ Sample Size: ${rowCount} data points
       content: answer,
       confidence: statsCheck.allowed ? 'high' : 'moderate',
       industryType: industryType,
-      industryMetrics: schemaMetrics,  
       statistics: statisticalResults,
       availableColumns: availableColumns,
       sqlQueries: sqlQueries,
@@ -1860,68 +1789,6 @@ Sample Size: ${rowCount} data points
       success: false,
       error: 'Analysis failed: ' + error.message,
       type: 'error'
-    });
-  }
-});
-
-// ============================================
-// SAVE ANALYSIS TO HISTORY
-// ============================================
-app.post('/api/save-analysis', verifyToken, async (req, res) => {
-  try {
-    const { rawData, csvData, analysis, dataType, tags, originalRowCount, isSampled, industryType } = req.body;
-    
-    console.log(`💾 Saving analysis for user: ${req.user.email}`);
-    
-    const estimatedSize = JSON.stringify(req.body).length;
-    console.log(`💾 Estimated size: ${(estimatedSize / 1024 / 1024).toFixed(2)} MB`);
-    
-    if (estimatedSize > 15 * 1024 * 1024) {
-      console.warn('⚠️ Document too large - skipping save');
-      return res.json({
-        success: true,
-        analysisId: null,
-        warning: 'Dataset too large to save in history.'
-      });
-    }
-    
-    if (!csvData || !analysis) {
-      console.warn('⚠️ Missing required fields - skipping save');
-      return res.json({
-        success: true,
-        analysisId: null,
-        warning: 'Missing data - analysis not saved.'
-      });
-    }
-    
-    const newAnalysis = new Analysis({
-      userId: req.user.uid,
-      userEmail: req.user.email,
-      userName: req.user.name,
-      rawData: rawData ? rawData.substring(0, 50000) : '',
-      csvData,
-      analysis,
-      industryType: industryType || 'business',
-      dataType: dataType || 'sales',
-      tags: tags || ['auto-saved'],
-      timestamp: new Date()
-    });
-    
-    await newAnalysis.save();
-    console.log('✅ Analysis saved:', newAnalysis._id);
-    
-    res.json({
-      success: true,
-      message: 'Analysis saved successfully',
-      analysisId: newAnalysis._id
-    });
-    
-  } catch (error) {
-    console.error('❌ Save analysis error:', error.message);
-    res.json({
-      success: true,
-      analysisId: null,
-      warning: 'Could not save to history.'
     });
   }
 });
@@ -2195,545 +2062,7 @@ Use Indian Rupee lakhs/crores format. Be direct and specific to ${currentIndustr
   }
 });
 
-
-// ============================================
-// CONVERSATIONAL AI DATA SCIENTIST ENDPOINT (USING GROQ)
-// ============================================
-app.post('/api/chat-analyze', verifyToken, async (req, res) => {
-  try {
-    const { message, conversationHistory } = req.body;
-
-    console.log('💬 Conversational analysis request:', message);
-
-    // Step 1: Extract data from natural language using GROQ
-    const extractionPrompt = `You are a data extraction specialist. Extract all numerical data, metrics, and business information from the following text and convert it to CSV format.
-
-User message: "${message}"
-
-Extract and structure as CSV with these rules:
-1. Create appropriate column headers (Metric, Value, Unit, Category, Region, etc.)
-2. Each piece of data should be a row
-3. Preserve all numbers, percentages, dates, and categories
-4. Return ONLY valid CSV, no markdown, no explanations
-
-Example format:
-Metric,Value,Unit,Category,Region
-Product A Price Official,120,USD/month,Product,Global
-Product A Price Actual Min,82,USD/month,Product,Global
-Product A Price Actual Max,95,USD/month,Product,Global
-Churn Rate Overall,4.1,percent,KPI,Global
-Churn Rate SMB,6.5,percent,KPI,SMB
-
-CSV:`;
-
-    // Call GROQ for extraction
-    let extractedCSV;
-    try {
-      extractedCSV = await callGroqAPI([
-        { role: 'system', content: 'You are a data extraction expert. Return ONLY CSV format, no markdown, no explanations.' },
-        { role: 'user', content: extractionPrompt }
-      ]);
-      
-      // Clean the CSV
-      extractedCSV = extractedCSV
-        .replace(/```csv\n?/g, '')
-        .replace(/```\n?/g, '')
-        .trim();
-      
-    } catch (error) {
-      console.error('CSV extraction error:', error);
-      extractedCSV = 'Metric,Value,Unit\nData Extraction,Failed,N/A';
-    }
-
-    console.log('📊 Extracted CSV:', extractedCSV.substring(0, 200) + '...');
-
-    // Step 2: Parse CSV into structured format
-    const csvLines = extractedCSV.split('\n').filter(line => line.trim());
-    
-    if (csvLines.length < 2) {
-      return res.json({
-        success: true,
-        conversation: {
-          userMessage: message,
-          aiResponse: "I understand your situation, but I couldn't extract enough structured data from your message. Could you provide some specific numbers or metrics I can analyze?"
-        },
-        extractedData: null,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    const headers = csvLines[0].split(',').map(h => h.trim().replace(/"/g, ''));
-    const data = csvLines.slice(1).map(line => {
-      return line.split(',').map(cell => {
-        const cleaned = cell.trim().replace(/"/g, '');
-        const num = parseFloat(cleaned.replace(/[$,₹%]/g, ''));
-        return isNaN(num) ? cleaned : num;
-      });
-    });
-
-    const csvData = { headers, data };
-
-    console.log(`✅ Parsed ${data.length} rows with ${headers.length} columns`);
-
-    // Step 3: Industry Detection & Metrics
-    const availableColumns = detectAvailableMetrics(headers);
-    const industryType = detectIndustryType(availableColumns);
-    const schemaMetrics = generateIndustryMetrics(csvData, industryType, availableColumns);
-
-    console.log('🎯 Detected Industry:', industryType);
-
-    // Step 4: Advanced Statistical Analysis
-    let statisticalResults = null;
-    
-    const valueColumn = headers.findIndex(h => 
-      h.toLowerCase().includes('value') || 
-      h.toLowerCase().includes('amount') ||
-      h.toLowerCase().includes('revenue') ||
-      h.toLowerCase().includes('price')
-    );
-
-    if (valueColumn >= 0) {
-      const values = data
-        .map(row => parseFloat(row[valueColumn]))
-        .filter(val => !isNaN(val) && isFinite(val));
-
-      if (values.length >= 10) {
-        const AdvancedStatistics = require('./utils/advancedStats');
-        const stats = new AdvancedStatistics(values, headers[valueColumn]);
-        statisticalResults = stats.getFullAnalysis();
-        console.log('✅ Statistical analysis complete');
-      } else {
-        statisticalResults = {
-          disabled: true,
-          reason: `Only ${values.length} numeric values found (need 10+)`,
-          sampleSize: values.length
-        };
-      }
-    }
-
-    // Step 5: Calculate Basic Metrics
-    // Calculate metrics from csvData
-    const metrics = {
-      totalRows: data.length,
-      totalColumns: headers.length,
-      totalRevenue: schemaMetrics['Total Revenue'] ? parseFloat(schemaMetrics['Total Revenue']) : 0,
-      avgRevenue: schemaMetrics['Average Revenue'] ? parseFloat(schemaMetrics['Average Revenue']) : 0,
-      dataPoints: data.length,
-      growthRate: null, // Will be calculated if date column exists
-      industryType: industryType
-    };
-    
-    // Calculate growth rate if we have a date column
-    const dateCol = headers.findIndex(h => 
-      h.toLowerCase().includes('date') || 
-      h.toLowerCase().includes('month') || 
-      h.toLowerCase().includes('year')
-    );
-    
-    const revenueCol = headers.findIndex(h => 
-      h.toLowerCase().includes('revenue') || 
-      h.toLowerCase().includes('sales') || 
-      h.toLowerCase().includes('amount')
-    );
-    
-    if (dateCol >= 0 && revenueCol >= 0 && data.length >= 2) {
-      const firstRevenue = parseFloat(data[0][revenueCol]) || 0;
-      const lastRevenue = parseFloat(data[data.length - 1][revenueCol]) || 0;
-      
-      if (firstRevenue > 0) {
-        metrics.growthRate = ((lastRevenue - firstRevenue) / firstRevenue) * 100;
-      }
-    }
-
-    // Step 6: Prepare Chart Data
-    // Prepare chart data from csvData
-    const chartData = {
-      hasCharts: false,
-      charts: []
-    };
-    
-    // Try to create basic charts if we have time-series data
-    const dateColChart = headers.findIndex(h => 
-      h.toLowerCase().includes('date') || 
-      h.toLowerCase().includes('month') || 
-      h.toLowerCase().includes('year') ||
-      h.toLowerCase().includes('time')
-    );
-    
-    const valueColChart = headers.findIndex(h => 
-      h.toLowerCase().includes('value') || 
-      h.toLowerCase().includes('revenue') || 
-      h.toLowerCase().includes('amount') ||
-      h.toLowerCase().includes('sales')
-    );
-    
-    if (dateColChart >= 0 && valueColChart >= 0 && data.length > 0) {
-      chartData.hasCharts = true;
-      chartData.charts.push({
-        type: 'line',
-        title: `${headers[valueColChart]} Over Time`,
-        data: data.map(row => ({
-          x: row[dateColChart],
-          y: parseFloat(row[valueColChart]) || 0
-        }))
-      });
-    }
-    
-    // Add category distribution if we have categorical data
-    const categoryColChart = headers.findIndex(h => 
-      h.toLowerCase().includes('category') || 
-      h.toLowerCase().includes('type') || 
-      h.toLowerCase().includes('status')
-    );
-    
-    if (categoryColChart >= 0 && valueColChart >= 0) {
-      const categoryDataChart = {};
-      data.forEach(row => {
-        const category = row[categoryColChart];
-        const value = parseFloat(row[valueColChart]) || 0;
-        categoryDataChart[category] = (categoryDataChart[category] || 0) + value;
-      });
-      
-      chartData.charts.push({
-        type: 'bar',
-        title: `${headers[valueColChart]} by ${headers[categoryColChart]}`,
-        data: Object.entries(categoryDataChart).map(([category, value]) => ({
-          category,
-          value
-        }))
-      });
-    }
-
-    // Step 7: Generate SQL Documentation
-    const sqlQueries = generateValidatedSQL(csvData, schemaMetrics, availableColumns);
-
-    // Step 8: Generate Comprehensive Business Insights using GROQ
-    const dataContext = `
-📊 EXTRACTED DATA ANALYSIS
-Industry: ${industryType}
-Total Data Points: ${data.length}
-Columns: ${headers.join(', ')}
-
-📋 DATA SAMPLE:
-${headers.join(' | ')}
-${data.slice(0, 10).map(row => row.join(' | ')).join('\n')}
-${data.length > 10 ? `\n... (${data.length - 10} more rows)` : ''}
-
-📈 KEY METRICS:
-${metrics ? `
-- Total Revenue: ₹${metrics.totalRevenue?.toLocaleString() || 'N/A'}
-- Average: ₹${metrics.avgRevenue?.toLocaleString() || 'N/A'}
-- Growth Rate: ${metrics.growthRate?.toFixed(2) || 'N/A'}%
-- Data Points: ${metrics.dataPoints}
-` : 'Metrics calculation in progress...'}
-
-📊 STATISTICAL SUMMARY:
-${statisticalResults && !statisticalResults.disabled ? `
-- Sample Size: ${statisticalResults.sampleSize}
-- Mean: ${statisticalResults.mean?.toFixed(2)}
-- Median: ${statisticalResults.median?.toFixed(2)}
-- Std Dev: ${statisticalResults.standardDeviation?.toFixed(2)}
-- Outliers (IQR): ${statisticalResults.outliersIQR?.count || 0}
-` : 'Limited statistical analysis available'}
-`;
-
-    const insightPrompt = `You are a professional ${industryType} business analyst. Analyze this data and provide actionable insights.
-
-${dataContext}
-
-ORIGINAL CONTEXT:
-${message.substring(0, 1000)}...
-
-Provide a comprehensive analysis in this structure:
-
-**🎯 KEY FINDINGS**
-- 3-5 most critical insights from the data
-- Focus on actionable patterns
-
-**📊 STATISTICAL INTERPRETATION**
-- What the numbers reveal about business health
-- Trends and patterns
-
-**⚠️ RISK ANALYSIS**
-- What could go wrong
-- Red flags in the data
-
-**💡 PRIORITIZED RECOMMENDATIONS**
-1. Urgent actions (do immediately)
-2. Important actions (this quarter)
-3. Long-term improvements
-
-**📈 NEXT STEPS**
-- Specific, measurable actions
-
-Use Indian Rupee format (lakhs/crores). Be specific and executive-ready.`;
-
-    const insightResponse = await callGroqAPI([
-      ...(conversationHistory || []).slice(-3).map(msg => ({
-        role: msg.role,
-        content: msg.content
-      })),
-      { role: 'user', content: insightPrompt }
-    ]);
-
-    console.log('✅ AI insights generated');
-
-    // Step 9: Return Complete Analysis
-    res.json({
-      success: true,
-      conversation: {
-        userMessage: message,
-        aiResponse: insightResponse
-      },
-      // Same data structure as /api/analyze
-      csvData: csvData,
-      metrics: metrics,
-      charts: chartData,
-      statistics: statisticalResults,
-      industryMetrics: schemaMetrics,
-      availableColumns: availableColumns,
-      sqlQueries: sqlQueries,
-      industryType: industryType,
-      extractedCSV: extractedCSV,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('❌ Chat analysis error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-// ============================================
-// TEXT TO DATA EXTRACTION ENDPOINT (USING GROQ)
-// ============================================
-app.post('/api/extract-data', verifyToken, async (req, res) => {
-  try {
-    const { text } = req.body;
-
-    const extractionPrompt = `Extract all numerical data from this business conversation and convert it to CSV format.
-
-Text: "${text}"
-
-Rules:
-1. Find all metrics, prices, percentages, dates
-2. Create appropriate column headers
-3. Each metric should be a row
-4. Return ONLY CSV format, no explanation, no markdown
-
-Example output:
-Metric,Value,Unit,Context
-Product A Price,120,USD/month,Official
-Product A Actual,82-95,USD/month,Realized
-Churn Rate,4.1,percent,Monthly`;
-
-    const csvResponse = await callGroqAPI([
-      { role: 'system', content: 'Return ONLY CSV format, no markdown, no explanations.' },
-      { role: 'user', content: extractionPrompt }
-    ]);
-
-    const cleanedCSV = csvResponse
-      .replace(/```csv\n?/g, '')
-      .replace(/```\n?/g, '')
-      .trim();
-
-    res.json({
-      success: true,
-      csvData: cleanedCSV,
-      message: 'Data extracted and converted to CSV'
-    });
-
-  } catch (error) {
-    console.error('❌ Data extraction error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-// ============================================
-// CONVERSATIONAL QUERY ENDPOINT (Talk to AI Mode)
-// ============================================
-app.post('/api/query', upload.single('file'), async (req, res) => {
-  let filePath = null;
-  
-  try {
-    const { query, conversationHistory } = req.body;
-    const file = req.file;
-
-    if (!file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
-
-    filePath = file.path;
-    console.log(`📊 Processing query with file: ${file.originalname}`);
-
-    // Parse CSV
-    const csv = require('csv-parser');
-    const results = [];
-
-    await new Promise((resolve, reject) => {
-      fs.createReadStream(filePath)
-        .pipe(csv())
-        .on('data', (data) => results.push(data))
-        .on('end', resolve)
-        .on('error', reject);
-    });
-
-    // Clean up file
-    fs.unlinkSync(filePath);
-
-    if (results.length === 0) {
-      return res.status(400).json({ error: 'Empty CSV file' });
-    }
-
-    // Get schema information
-    const columns = Object.keys(results[0]);
-    const sampleData = results.slice(0, 5);
-    
-    // Analyze data types and statistics
-    const columnStats = {};
-    const numericColumns = [];
-    
-    columns.forEach(col => {
-      const values = results.map(row => row[col]).filter(v => v !== null && v !== undefined && v !== '');
-      const numericValues = values.map(v => parseFloat(v)).filter(v => !isNaN(v));
-      
-      if (numericValues.length > values.length * 0.8) {
-        numericColumns.push(col);
-        columnStats[col] = {
-          type: 'numeric',
-          min: Math.min(...numericValues),
-          max: Math.max(...numericValues),
-          mean: numericValues.reduce((a, b) => a + b, 0) / numericValues.length,
-          count: numericValues.length
-        };
-      } else {
-        const uniqueValues = [...new Set(values)];
-        columnStats[col] = {
-          type: 'categorical',
-          uniqueCount: uniqueValues.length,
-          sampleValues: uniqueValues.slice(0, 5),
-          count: values.length
-        };
-      }
-    });
-
-    // Detect industry and generate metrics
-    const availableColumns = detectAvailableMetrics(columns);
-    const industryType = detectIndustryType(availableColumns);
-    
-    // Convert to csvData format for schema analysis
-    const csvData = {
-      headers: columns,
-      data: results.map(row => columns.map(col => {
-        const val = row[col];
-        const num = parseFloat(val);
-        return isNaN(num) ? val : num;
-      }))
-    };
-    
-    const schemaMetrics = generateIndustryMetrics(csvData, industryType, availableColumns);
-    const sqlQueries = generateValidatedSQL(csvData, schemaMetrics, availableColumns);
-
-    // Create schema summary for AI
-    const schemaSummary = `
-Dataset Schema:
-- Total Rows: ${results.length}
-- Columns: ${columns.join(', ')}
-- Industry: ${industryType}
-
-Column Details:
-${columns.map(col => {
-  const stats = columnStats[col];
-  if (stats.type === 'numeric') {
-    return `- ${col} (Numeric): Range ${stats.min.toFixed(2)} to ${stats.max.toFixed(2)}, Mean: ${stats.mean.toFixed(2)}`;
-  } else {
-    return `- ${col} (Categorical): ${stats.uniqueCount} unique values (e.g., ${stats.sampleValues.join(', ')})`;
-  }
-}).join('\n')}
-
-Sample Data:
-${JSON.stringify(sampleData, null, 2)}
-`;
-
-    // Build conversation context
-    const messages = [
-      {
-        role: 'user',
-        content: `You are a data analyst assistant. You have access to a CSV dataset with the following schema:
-
-${schemaSummary}
-
-When answering questions:
-1. Provide insights based on the actual data
-2. Reference specific columns and statistics
-3. Suggest relevant analyses or visualizations
-4. Be concise but informative
-
-User Question: ${query}`
-      }
-    ];
-
-    // Add conversation history
-    if (conversationHistory && conversationHistory.length > 0) {
-      conversationHistory.forEach(msg => {
-        messages.push({
-          role: msg.role,
-          content: msg.content
-        });
-      });
-      messages.push({
-        role: 'user',
-        content: query
-      });
-    }
-
-    // Call GROQ API
-    const aiResponse = await callGroqAPI(messages);
-
-    // Return response with schema info
-    res.json({
-      response: aiResponse,
-      schema: {
-        columns: columns,
-        rowCount: results.length,
-        columnStats: columnStats,
-        numericColumns: numericColumns,
-        sampleData: sampleData
-      },
-      metrics: {
-        totalRows: results.length,
-        totalColumns: columns.length,
-        numericColumns: numericColumns.length,
-        categoricalColumns: columns.length - numericColumns.length
-      },
-      schemaMetrics: schemaMetrics,
-      availableColumns: availableColumns,
-      sqlQueries: sqlQueries,
-      industryType: industryType
-    });
-
-  } catch (error) {
-    console.error('❌ Query error:', error);
-    
-    // Cleanup file on error
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    
-    res.status(500).json({ 
-      error: 'Error processing query',
-      details: error.message 
-    });
-  }
-});
-// ============================================
 // Serve React Frontend (works in all environments)
-// ============================================
 const buildPath = path.join(__dirname, '..', 'frontend', 'build');
 if (fs.existsSync(buildPath)) {
   console.log('ðŸ“¦ Serving frontend from:', buildPath);
